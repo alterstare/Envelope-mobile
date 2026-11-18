@@ -1,14 +1,13 @@
-// Android app icons + splash from the Sorta logo (`sorta icon.png`, 1024²,
-// the same art as the PC app):
+// Android app icons + splash from the Envelope logo (`Env_icon_v2.png`, 1024²,
+// the same art as the PC app; rendering as the PC's scripts/make-icons.mjs):
 //   mipmap-*/ic_launcher.png            legacy icon, rounded square (as on the PC)
 //   mipmap-*/ic_launcher_round.png      legacy round icon
-//   mipmap-*/ic_launcher_foreground.png adaptive icon layer (108dp): the whole
-//                                       logo fills the 72dp visible part, its
-//                                       edges stretched outwards for the margin
+//   mipmap-*/ic_launcher_foreground.png adaptive icon layer (108dp): the logo in
+//                                       the visible 72dp, the art's ground around it
 //   drawable-*/splash.png               launch screen before Android 12
-// Every size is rendered on its own from the full-size art (area-averaged,
-// small sizes sharpened), so the halftone dots blend into tone instead of
-// breaking into blotches.
+// Every size is rendered on its own from the full-size art: the halftone dots
+// are blurred into tone before shrinking (a plain resize turns them into moiré)
+// and the purple stripe is drawn again as a sharp shape at that size.
 //   node scripts/make-icons.mjs
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -19,55 +18,52 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const res = join(root, 'android/app/src/main/res')
 const SIZE = 1024
 const RADIUS = 0.22 // corner radius / side, as the PC app's icon
-const BG = '#f4f5f8' // the app's light background
+const BG = '#f4f5f8' // the app's light background (splash)
+const GROUND = '#f0eef8' // the art's light ground
 const DENSITY = { mdpi: 1, hdpi: 1.5, xhdpi: 2, xxhdpi: 3, xxxhdpi: 4 }
+// the stripe in the 1024² art (measured on the PC): top edge y 153.5 from x
+// 805.5 to 935, bottom edge y 870 from x 89 to 219.5
+const STRIPE = { top: 153.5, bottom: 870, tl: 805.5, tr: 935, bl: 89, br: 219.5, color: '#6e2cf5' }
+const MIN_STRIPE_PX = 2.4
 
-const art = await sharp(readFileSync(join(root, 'sorta icon.png'))).resize(SIZE, SIZE).ensureAlpha().png().toBuffer()
-const masked = async (svgShape) =>
-  sharp(art)
-    .composite([{ input: Buffer.from(`<svg width="${SIZE}" height="${SIZE}">${svgShape}</svg>`), blend: 'dest-in' }])
-    .png()
-    .toBuffer()
-// Small sizes: the S is thin purple stripes on lavender, which average out to
-// a pale tint. A purple layer whose opacity is the stripes' local density
-// (gamma-lifted) keeps its top-to-bottom fade but reads at icon size.
-const { data: px, info } = await sharp(art).raw().toBuffer({ resolveWithObject: true })
-const purple = Buffer.alloc(info.width * info.height)
-for (let i = 0; i < purple.length; i++) {
-  const r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2]
-  purple[i] = b > r + 40 && b > g + 60 ? 255 : 0
+const stripe = (n, color = STRIPE.color, pad = 0) => {
+  const k = n / SIZE
+  const w = (STRIPE.tr - STRIPE.tl) * k
+  const grow = Math.max(pad, (MIN_STRIPE_PX - w) / 2)
+  const pts = [
+    [STRIPE.tl * k - grow, STRIPE.top * k],
+    [STRIPE.tr * k + grow, STRIPE.top * k],
+    [STRIPE.br * k + grow, STRIPE.bottom * k],
+    [STRIPE.bl * k - grow, STRIPE.bottom * k]
+  ]
+  return Buffer.from(
+    `<svg width="${n}" height="${n}"><polygon points="${pts.map((p) => p.map((v) => v.toFixed(3)).join(',')).join(' ')}" fill="${color}"/></svg>`
+  )
 }
-const density = await sharp(purple, { raw: { width: info.width, height: info.height, channels: 1 } }).blur(6).extractChannel(0).raw().toBuffer()
-const overlay = Buffer.alloc(info.width * info.height * 4)
-for (let i = 0; i < info.width * info.height; i++) {
-  overlay.set([0x71, 0x32, 0xf5, Math.round(255 * Math.pow(density[i] / 255, 0.55))], i * 4)
-}
-const bold = await sharp(art)
-  .composite([{ input: overlay, raw: { width: info.width, height: info.height, channels: 4 } }])
+
+// the art without its stripe (it is drawn again sharp at each size)
+const art = await sharp(readFileSync(join(root, 'Env_icon_v2.png')))
+  .resize(SIZE, SIZE)
+  .removeAlpha()
+  .composite([{ input: stripe(SIZE, GROUND, 3) }])
   .png()
   .toBuffer()
-const BOLD_BELOW = Infinity // launcher icons always show small on screen: all use the bold S (the splash keeps the stripes)
 
-const roundedOf = (src) =>
-  sharp(src)
-    .composite([{ input: Buffer.from(`<svg width="${SIZE}" height="${SIZE}"><rect width="${SIZE}" height="${SIZE}" rx="${SIZE * RADIUS}" ry="${SIZE * RADIUS}" fill="#fff"/></svg>`), blend: 'dest-in' }])
+const shape = {
+  square: () => null,
+  rounded: (n) => `<rect width="${n}" height="${n}" rx="${n * RADIUS}" ry="${n * RADIUS}" fill="#fff"/>`,
+  round: (n) => `<circle cx="${n / 2}" cy="${n / 2}" r="${n / 2}" fill="#fff"/>`
+}
+
+async function render(n, mask = 'rounded') {
+  const sigma = (SIZE / n) * 0.5
+  const tone = await sharp(sigma >= 0.3 ? await sharp(art).blur(sigma).png().toBuffer() : art)
+    .resize(n, n, { kernel: 'mitchell' })
     .png()
     .toBuffer()
-const roundOf = (src) =>
-  sharp(src)
-    .composite([{ input: Buffer.from(`<svg width="${SIZE}" height="${SIZE}"><circle cx="${SIZE / 2}" cy="${SIZE / 2}" r="${SIZE / 2}" fill="#fff"/></svg>`), blend: 'dest-in' }])
-    .png()
-    .toBuffer()
-const roundedBold = await roundedOf(bold)
-const roundBold = await roundOf(bold)
-const rounded = await masked(`<rect width="${SIZE}" height="${SIZE}" rx="${SIZE * RADIUS}" ry="${SIZE * RADIUS}" fill="#fff"/>`)
-const round = await masked(`<circle cx="${SIZE / 2}" cy="${SIZE / 2}" r="${SIZE / 2}" fill="#fff"/>`)
-
-// One size from the big art: linear-light area averaging, a little sharpening
-// and contrast on the small ones so the "S" stays readable.
-async function render(src, n) {
-  let img = sharp(src).resize(n, n, { kernel: n <= 96 ? 'lanczos3' : 'mitchell' })
-  if (n <= 144) img = img.sharpen({ sigma: 0.5 })
+  let img = sharp(await sharp(tone).composite([{ input: stripe(n) }]).png().toBuffer()).ensureAlpha()
+  const m = shape[mask](n)
+  if (m) img = img.composite([{ input: Buffer.from(`<svg width="${n}" height="${n}">${m}</svg>`), blend: 'dest-in' }])
   return img.png({ compressionLevel: 9 }).toBuffer()
 }
 
@@ -75,18 +71,16 @@ for (const [d, k] of Object.entries(DENSITY)) {
   const dir = join(res, `mipmap-${d}`)
   mkdirSync(dir, { recursive: true })
   const legacy = Math.round(48 * k)
-  const small = legacy < BOLD_BELOW
-  writeFileSync(join(dir, 'ic_launcher.png'), await render(small ? roundedBold : rounded, legacy))
-  writeFileSync(join(dir, 'ic_launcher_round.png'), await render(small ? roundBold : round, legacy))
-  // adaptive foreground: 108dp, the logo in the middle 72dp; the margin (seen
-  // only while the launcher animates) is the logo enlarged and blurred
+  writeFileSync(join(dir, 'ic_launcher.png'), await render(legacy, 'rounded'))
+  writeFileSync(join(dir, 'ic_launcher_round.png'), await render(legacy, 'round'))
+  // adaptive foreground: 108dp, the whole logo in the visible middle 72dp
+  // (the launcher's mask cuts its corners); around it the background layer =
+  // the art's ground colour (values/ic_launcher_background)
   const full = Math.round(108 * k)
   const inner = Math.round(72 * k)
   const pad = Math.floor((full - inner) / 2)
-  const logo = await render(inner < BOLD_BELOW ? bold : art, inner)
-  const back = await sharp(art).resize(full, full).blur(Math.max(1, full / 24)).png().toBuffer()
-  const fg = await sharp(back)
-    .composite([{ input: logo, left: pad, top: pad }])
+  const fg = await sharp(await render(inner, 'square'))
+    .extend({ top: pad, left: pad, bottom: full - inner - pad, right: full - inner - pad, background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .png({ compressionLevel: 9 })
     .toBuffer()
   writeFileSync(join(dir, 'ic_launcher_foreground.png'), fg)
@@ -107,9 +101,8 @@ const SPLASH = {
 }
 for (const [d, [w, h]] of Object.entries(SPLASH)) {
   const n = Math.round(Math.min(w, h) * 0.32)
-  const logo = await render(rounded, n)
   const png = await sharp({ create: { width: w, height: h, channels: 4, background: BG } })
-    .composite([{ input: logo, left: Math.round((w - n) / 2), top: Math.round((h - n) / 2) }])
+    .composite([{ input: await render(n), left: Math.round((w - n) / 2), top: Math.round((h - n) / 2) }])
     .png({ compressionLevel: 9 })
     .toBuffer()
   mkdirSync(join(res, `drawable-${d}`), { recursive: true })
@@ -118,8 +111,16 @@ for (const [d, [w, h]] of Object.entries(SPLASH)) {
 writeFileSync(
   join(res, 'drawable/splash.png'),
   await sharp({ create: { width: 480, height: 800, channels: 4, background: BG } })
-    .composite([{ input: await render(rounded, 154), left: 163, top: 323 }])
+    .composite([{ input: await render(154), left: 163, top: 323 }])
     .png()
     .toBuffer()
+)
+// the adaptive icon's background = the ground as the rendered logo has it
+// (a shade off from the art after resizing), so no edge shows around it
+const px = await sharp(await render(288, 'square')).extract({ left: 4, top: 4, width: 1, height: 1 }).raw().toBuffer()
+const ground = '#' + [...px.subarray(0, 3)].map((v) => v.toString(16).padStart(2, '0')).join('').toUpperCase()
+writeFileSync(
+  join(res, 'values/ic_launcher_background.xml'),
+  `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">${ground}</color>\n</resources>\n`
 )
 console.log('icons + splash written')

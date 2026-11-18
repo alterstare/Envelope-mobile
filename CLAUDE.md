@@ -18,9 +18,17 @@ picture-in-picture). Commits: subject-only, **no Claude trailer**.
   `<filesDir>/library-<source>.json`; packs re-read at start when their mtime changes,
   scans only on 다시 읽기.
 - `backend/library.ts` builds Envelope's `WorkSummary` / `WorkDetail` (ports of
-  core/library buildGroups / listWorks / workDetail). Phone-side state (즐겨찾기, 평점,
-  그룹, 이어 듣기, 북마크, 싱크, SE / 판) in localStorage `env-state`
-  (`backend/state.ts`); a work first seen in a pack takes the PC's state once.
+  core/library buildGroups / listWorks / workDetail). State (즐겨찾기, 평점, 그룹,
+  이어 듣기, 북마크, 싱크, SE / 판, 감상 횟수) in localStorage `env-state`
+  (`backend/state.ts`).
+- **Shared with Envelope (PC) like Sorta 모바일** (`backend/sync.ts`): every change is
+  a `MobileEdit`, applied locally at once and, in a folder with a pack, written ~2.5 s
+  later (30 s when only positions changed) as `.envelope/mobile/<device>-<ms>.json`.
+  Envelope (설정 › 모바일 공유 on) applies + deletes them and rewrites the pack. On
+  every pack read the pack's state replaces the phone's for that folder, then the
+  journal (`env-journal`) is laid on top, minus entries whose file is gone and older
+  than the pack. Packs are re-read at start and on resume. Scanned folders (no pack)
+  keep state on the phone only.
 - `backend/api.ts` = `window.api` with the PC app's call names, so the Envelope
   screens run almost unchanged.
 
@@ -60,9 +68,10 @@ Emulator (`mm_test`): `.scratch/gen.mjs` (fake library: sine wavs, vtt, solid co
 `.scratch/fwd.sh` then `node .scratch/cdp.mjs "<js>"` evaluates in the WebView.
 Overlay permission on the emulator: `adb shell appops set com.alterstare.envelope SYSTEM_ALERT_WINDOW allow`.
 
-## Not done yet
+## Notes / not done
 
-- **Envelope (PC) side writing `.envelope/mobile.envpack` + `.envelope/covers/`**
-  (format fixed in mobilePack.ts; until then every folder is scanned).
-- App icon (`npm run icons` from `Env_icon_v2.png` — script still Sorta's), release
-  signing / update notice, notification artwork check, video tracks play as audio only.
+- Release signing / update notice; video tracks play as audio only (by choice).
+- Notification artwork: sent square (whole cover over its blurred copy); Android
+  13+'s media card still crops it to the card as for every player.
+- Verified PC ⇄ phone round trip on the emulator with a temporary Envelope
+  harness (PC core against `.scratch/nas/voice`).

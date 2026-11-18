@@ -1,12 +1,15 @@
 // window.api on the phone: the same calls the Envelope screens make to the PC
 // app's main process, answered here (library.ts / state.ts / the plugin).
 import type { Group, LibrarySource, ProgressEvent, SePref, Settings, SubLang, SubtitleText, WorkDetail, WorkSummary } from '../shared/types'
-import { native, imgUrl, thumbUrl, readBytes, isNas, nasParts, nasPath } from './native'
+import { native, imgUrl, thumbUrl, readBytes, isNas, joinPath, nasParts, nasPath } from './native'
+import { PACK_FILE } from '../shared/mobilePack'
 import type { NasConn, NasVia, OverlayConfig } from './native'
-import { appSubText, dropSource, initLibrary, listGroups, listWorks, readSource, sourceInfo, workDetail, workKey, worksIn, APP_SUB } from './library'
+import { appSubFile, dropSource, initLibrary, listGroups, listWorks, readSource, refOf, sourceInfo, workDetail, worksIn, APP_SUB } from './library'
 import { decodeText, isEnvMade, langOfText, parseSubtitle } from './envcore/subtitle'
 import { extname } from './envcore/scan'
-import { editUser, saveState, state } from './state'
+import { userOf, saveState, state } from './state'
+import { change, flush } from './sync'
+import type { MobileEdit } from '../shared/mobilePack'
 
 export interface Toast {
   ok: boolean
@@ -57,12 +60,17 @@ async function start(): Promise<void> {
 }
 const boot = (): Promise<void> => (ready ??= start())
 
-const keyOf = (id: number): string | null => workKey(id)
-const touch = (id: number, fn: (u: ReturnType<typeof editUser>) => void): void => {
-  const k = keyOf(id)
-  if (!k) return
-  fn(editUser(k))
-  saveState()
+// One change to a work: applied on the phone, and written for Envelope (PC)
+// when the work's folder is shared (sync.ts).
+type WorkEdit = MobileEdit extends infer E ? (E extends { work: string } ? Omit<E, 'work' | 'at'> : never) : never
+function edit(id: number, e: WorkEdit, at = Date.now()): void {
+  const r = refOf(id)
+  if (r) change(r.source, r.rel, { ...e, work: r.rel, at } as MobileEdit)
+}
+const groupName = (id: number): string | undefined => state.groups.find((g) => g.id === id)?.name
+const userById = (id: number): ReturnType<typeof userOf> => {
+  const r = refOf(id)
+  return userOf(r ? `${r.source}|${r.rel}` : '')
 }
 
 let scanning = false
@@ -143,7 +151,8 @@ async function coverColour(path: string): Promise<string | null> {
 
 async function readSubtitle(path: string): Promise<SubtitleText> {
   if (path.startsWith(APP_SUB)) {
-    const text = appSubText(path) ?? ''
+    const file = appSubFile(path)
+    const text = file ? decodeText(await readBytes(file)) : ''
     const lang = path.slice(APP_SUB.length, path.indexOf(':', APP_SUB.length)) as SubLang
     return { path, lang, cues: parseSubtitle(text, '.vtt'), envMade: true }
   }
@@ -174,14 +183,15 @@ export const api = {
   work: async (id: number): Promise<WorkDetail | null> => (await boot(), workDetail(id, settings)),
   groups: async (): Promise<Group[]> => listGroups(),
   scan: (force = false): Promise<Toast> => scanAll(force),
-  // At start: folders with a 모바일 정보 파일 are read again when Envelope wrote
-  // a new one (one small file); scanned folders wait for 다시 스캔.
+  // At start (and back from the background): folders with a 모바일 정보 파일 are
+  // read again when Envelope wrote a new one; scanned folders wait for 다시 읽기.
   refreshPacks: async (): Promise<boolean> => {
     if (scanning) return false
     let changed = false
     for (const s of settings.sources) {
       const d = sourceInfo(s.id)
-      if (d?.kind === 'scan') continue
+      // a scanned folder is read again only once Envelope has left a pack in it
+      if (d?.kind === 'scan' && !(await native.fsStat({ path: joinPath(s.path, PACK_FILE) }).catch(() => null))?.exists) continue
       try {
         const before = d?.packMtime
         await readSource(s, (done, total) => emit({ jobId: 0, label: '라이브러리 스캔', done, total, state: 'running' }))
@@ -205,61 +215,51 @@ export const api = {
   },
   sourceWorks: (id: string): number => worksIn(id),
 
-  // ---- per work (kept on the phone) ----
-  setFavorite: async (ids: number[], on: boolean): Promise<void> => ids.forEach((id) => touch(id, (u) => (u.favorite = on))),
-  setRank: async (ids: number[], r: number): Promise<void> => ids.forEach((id) => touch(id, (u) => (u.rank = Math.max(0, Math.min(5, r))))),
+  // ---- per work (shared with Envelope through the folder, sync.ts) ----
+  setFavorite: async (ids: number[], on: boolean): Promise<void> => ids.forEach((id) => edit(id, { op: 'work', set: { favorite: on } })),
+  setRank: async (ids: number[], r: number): Promise<void> => ids.forEach((id) => edit(id, { op: 'work', set: { rank: Math.max(0, Math.min(5, r)) } })),
   setGroupMembership: async (ids: number[], g: number, on: boolean): Promise<void> =>
-    ids.forEach((id) => touch(id, (u) => (u.groups = on ? [...new Set([...u.groups, g])] : u.groups.filter((x) => x !== g)))),
+    ids.forEach((id) => {
+      const have = userById(id).groups.map(groupName).filter((x): x is string => !!x)
+      const name = groupName(g)
+      if (!name) return
+      edit(id, { op: 'work', set: { groups: on ? [...new Set([...have, name])] : have.filter((x) => x !== name) } })
+    }),
   createGroup: async (name: string, ids: number[] = []): Promise<number> => {
-    const id = state.nextGroup++
-    state.groups.push({ id, name: name.trim() || '그룹' })
-    ids.forEach((w) => touch(w, (u) => u.groups.push(id)))
-    saveState()
+    const n = name.trim() || '그룹'
+    change(null, null, { op: 'group', action: 'create', name: n, at: Date.now() })
+    const id = state.groups.find((g) => g.name === n)!.id
+    await api.setGroupMembership(ids, id, true)
     return id
   },
   renameGroup: async (id: number, name: string): Promise<void> => {
-    const g = state.groups.find((x) => x.id === id)
-    if (g) g.name = name.trim() || g.name
-    saveState()
+    const from = groupName(id)
+    if (from && name.trim()) change(null, null, { op: 'group', action: 'rename', name: from, to: name.trim(), at: Date.now() })
   },
   deleteGroup: async (id: number): Promise<void> => {
-    state.groups = state.groups.filter((x) => x.id !== id)
-    for (const u of Object.values(state.works)) u.groups = u.groups.filter((x) => x !== id)
-    saveState()
+    const n = groupName(id)
+    if (n) change(null, null, { op: 'group', action: 'delete', name: n, at: Date.now() })
   },
   countPlay: async (id: number): Promise<number> => {
-    let n = 0
-    touch(id, (u) => (n = ++u.plays))
-    return n
+    edit(id, { op: 'play' })
+    return userById(id).plays
   },
-  setWorkPrefs: async (id: number, p: { sePref?: SePref; edition?: string }): Promise<void> =>
-    touch(id, (u) => {
-      if (p.sePref !== undefined) u.sePref = p.sePref
-      if (p.edition !== undefined) u.edition = p.edition
-    }),
-  resetProgress: async (id: number): Promise<void> =>
-    touch(id, (u) => {
-      u.progress = {}
-      u.lastGroup = null
-    }),
+  setWorkPrefs: async (id: number, p: { sePref?: SePref; edition?: string }): Promise<void> => edit(id, { op: 'work', set: { ...p } }),
+  resetProgress: async (id: number): Promise<void> => edit(id, { op: 'reset' }),
   saveProgress: async (p: { workId: number; groupKey: string; position: number; duration?: number; at?: number }): Promise<void> =>
-    touch(p.workId, (u) => {
-      const at = p.at ?? Date.now()
-      const old = u.progress[p.groupKey]
-      if (old && old.at > at) return // a newer report already came in
-      u.progress[p.groupKey] = { position: p.position, duration: p.duration ?? old?.duration ?? null, at }
-      u.lastPlayedAt = Math.max(u.lastPlayedAt ?? 0, at)
-      u.lastGroup = p.groupKey
-    }),
-  setSubOffset: async (workId: number, groupKey: string, v: number): Promise<void> => touch(workId, (u) => (u.offsets[groupKey] = v)),
+    edit(p.workId, { op: 'progress', groupKey: p.groupKey, position: p.position, duration: p.duration ?? null }, p.at ?? Date.now()),
+  setSubOffset: async (workId: number, groupKey: string, v: number): Promise<void> => edit(workId, { op: 'offset', groupKey, offset: v }),
   addBookmark: async (workId: number, groupKey: string, position: number, name: string): Promise<number> => {
-    const id = state.nextId++
-    touch(workId, (u) => u.bookmarks.push({ id, groupKey, position: Math.max(0, position), name: name.trim() || '북마크', createdAt: Date.now() }))
-    return id
+    edit(workId, { op: 'bookmark', action: 'add', groupKey, position: Math.max(0, position), name: name.trim() || '북마크' })
+    return userById(workId).bookmarks.find((b) => b.groupKey === groupKey && Math.abs(b.position - position) < 0.5)?.id ?? 0
   },
   deleteBookmark: async (id: number): Promise<void> => {
-    for (const u of Object.values(state.works)) u.bookmarks = u.bookmarks.filter((b) => b.id !== id)
-    saveState()
+    for (const [key, u] of Object.entries(state.works)) {
+      const b = u.bookmarks.find((x) => x.id === id)
+      if (!b) continue
+      const wid = state.ids[key]
+      if (wid) edit(wid, { op: 'bookmark', action: 'delete', groupKey: b.groupKey, position: b.position })
+    }
   },
 
   // ---- files ----
@@ -314,6 +314,6 @@ declare global {
 
 export function installBackend(): void {
   window.api = api
-  window.addEventListener('pagehide', () => saveState(true))
-  document.addEventListener('visibilitychange', () => document.hidden && saveState(true))
+  window.addEventListener('pagehide', () => (saveState(true), void flush()))
+  document.addEventListener('visibilitychange', () => document.hidden && (saveState(true), void flush()))
 }

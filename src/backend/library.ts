@@ -5,9 +5,9 @@
 // becomes a list of PackWork, cached in the app's files, and the screens get
 // Envelope's WorkSummary / WorkDetail built from it (ports of core/library).
 //
-// What the user does on the phone (즐겨찾기, 평점, 그룹, 이어 듣기, 북마크, 싱크 …)
-// is kept on the phone (state.ts). A work seen for the first time in a pack
-// starts from the PC's state.
+// What the user does (즐겨찾기, 평점, 그룹, 이어 듣기, 북마크, 싱크 …) is kept in
+// state.ts. In a folder with a pack it is shared with Envelope (sync.ts): the
+// pack's state, with the phone's edits Envelope hasn't applied yet on top.
 import type { Bookmark, Edition, Group, LibrarySource, Settings, SubFile, TrackGroup, TrackVersion, WorkDetail, WorkSummary, SePref, FormatPref } from '../shared/types'
 import type { MobilePack, PackTrack, PackWork } from '../shared/mobilePack'
 import { PACK_FILE, PACK_FORMAT } from '../shared/mobilePack'
@@ -18,6 +18,7 @@ import { findWorks, scanWork, splitByTrackCode } from './envcore/scan'
 import type { ScannedWork } from './envcore/scan'
 import { userOf, workUsers, saveState, state, groupIdByName } from './state'
 import type { WorkUser } from './state'
+import { replay, setShared } from './sync'
 
 export const FINISHED_MARGIN = 10 // s before the end that count as heard to the end
 export const APP_SUB = 'envsub:'
@@ -31,7 +32,8 @@ export interface SourceData {
   packAt: number // pack's createdAt (0 = scanned)
   packMtime: number
   works: PackWork[]
-  subs: Record<string, Record<string, string>>
+  subs: Record<string, Record<string, string>> // track rel → lang → .envelope/subs file
+  groups?: string[]
 }
 
 const sources = new Map<string, SourceData>()
@@ -41,6 +43,7 @@ const keyOfId = new Map<number, string>()
 
 export async function initLibrary(dir: string, list: LibrarySource[]): Promise<void> {
   dataDir = dir
+  setShared((id) => (sources.get(id)?.kind === 'pack' ? sources.get(id)!.root : null))
   for (const s of list) {
     try {
       const d = JSON.parse((await native.fsReadText({ path: cachePath(s.id) })).data) as SourceData
@@ -95,8 +98,7 @@ export async function readSource(s: LibrarySource, onStep: (done: number, total:
     onStep(0, 0)
     const pack = JSON.parse(await readGzipText(packPath)) as MobilePack
     if (pack.format !== PACK_FORMAT) throw new Error('모바일 정보 파일을 읽을 수 없습니다 (형식이 다름)')
-    data = { id: s.id, root: s.path, kind: 'pack', readAt: Date.now(), packAt: pack.createdAt, packMtime: st.mtime, works: pack.works, subs: pack.subs ?? {} }
-    importPack(s.id, pack)
+    data = { id: s.id, root: s.path, kind: 'pack', readAt: Date.now(), packAt: pack.createdAt, packMtime: st.mtime, works: pack.works, subs: pack.subs ?? {}, groups: pack.groups ?? [] }
   } else {
     const dirs = await findWorks(s.path)
     const works: PackWork[] = []
@@ -110,6 +112,10 @@ export async function readSource(s: LibrarySource, onStep: (done: number, total:
   }
   sources.set(s.id, data)
   indexIds()
+  if (data.kind === 'pack') {
+    applyPack(s.id, data)
+    await replay(s.id, data.packAt, (rel) => `${s.id}|${rel}`)
+  }
   await native.fsWriteText({ path: cachePath(s.id), data: JSON.stringify(data) })
   return { kind: data.kind, works: data.works.length }
 }
@@ -147,7 +153,7 @@ function fromScan(root: string, w: ScannedWork): PackWork {
     plays: 0,
     lastPlayedAt: null,
     lastGroup: null,
-    groupIds: [],
+    groups: [],
     progress: {},
     offsets: {},
     bookmarks: [],
@@ -174,26 +180,33 @@ function fromScan(root: string, w: ScannedWork): PackWork {
   }
 }
 
-// A work first met in a pack takes the PC's state (groups by name).
-function importPack(sid: string, pack: MobilePack): void {
-  const names = new Map(pack.groups.map((g) => [g.id, g.name]))
-  for (const w of pack.works) {
-    const key = `${sid}|${w.rel}`
-    if (state.works[key]) continue
+// The pack's state is the shared one: it replaces the phone's for every work
+// in the folder (the phone's own edits are laid on top again by sync.replay).
+function applyPack(sid: string, d: SourceData): void {
+  for (const g of d.groups ?? []) groupIdByName(g)
+  for (const w of d.works) {
+    const old = state.works[`${sid}|${w.rel}`]
     const u: WorkUser = {
       favorite: w.favorite,
       rank: w.rank,
-      groups: w.groupIds.map((g) => names.get(g)).filter((x): x is string => !!x).map(groupIdByName),
+      groups: (w.groups ?? []).map(groupIdByName),
       plays: w.plays,
       lastPlayedAt: w.lastPlayedAt,
       lastGroup: w.lastGroup,
       sePref: w.sePref,
       edition: w.edition,
-      progress: Object.fromEntries(Object.entries(w.progress).map(([k, p]) => [k, { position: p.position, duration: p.duration, at: 0 }])),
+      progress: Object.fromEntries(Object.entries(w.progress).map(([k, p]) => [k, { position: p.position, duration: p.duration, at: p.at ?? 0 }])),
       offsets: { ...w.offsets },
-      bookmarks: w.bookmarks.map((b) => ({ id: state.nextId++, groupKey: b.groupKey, position: b.position, name: b.name, createdAt: b.createdAt }))
+      // ids kept for bookmarks the phone already shows
+      bookmarks: w.bookmarks.map((b) => ({
+        id: old?.bookmarks.find((x) => x.groupKey === b.groupKey && Math.abs(x.position - b.position) < 0.5)?.id ?? state.nextId++,
+        groupKey: b.groupKey,
+        position: b.position,
+        name: b.name,
+        createdAt: b.createdAt
+      }))
     }
-    state.works[key] = u
+    state.works[`${sid}|${w.rel}`] = u
   }
   saveState()
 }
@@ -397,14 +410,25 @@ export function workDetail(id: number, s: Settings): WorkDetail | null {
   }
 }
 
-// The text of a subtitle kept in Envelope ("envsub:<lang>:<source>|<track rel>").
-export function appSubText(path: string): string | null {
+// Where a subtitle kept in Envelope is ("envsub:<lang>:<source>|<track rel>"
+// → <folder>/.envelope/subs/<file>.vtt), null when the pack doesn't list it.
+export function appSubFile(path: string): string | null {
   const rest = path.slice(APP_SUB.length)
   const at = rest.indexOf(':')
   const lang = rest.slice(0, at)
   const ref = rest.slice(at + 1)
   const bar = ref.indexOf('|')
-  return sources.get(ref.slice(0, bar))?.subs[ref.slice(bar + 1)]?.[lang] ?? null
+  const d = sources.get(ref.slice(0, bar))
+  const rel = d?.subs[ref.slice(bar + 1)]?.[lang]
+  return d && rel ? joinPath(d.root, rel) : null
+}
+
+// A work's folder and its path in it (for edits Envelope reads), by phone id.
+export function refOf(id: number): { source: string; rel: string } | null {
+  const key = keyOfId.get(id)
+  if (!key) return null
+  const bar = key.indexOf('|')
+  return { source: key.slice(0, bar), rel: key.slice(bar + 1) }
 }
 
 export function listGroups(): Group[] {

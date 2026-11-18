@@ -62,6 +62,8 @@ export default function App(): JSX.Element {
       // back from the background: what the player did meanwhile
       native.addListener('resume', () => {
         void drain()
+        // what Envelope (PC) changed meanwhile
+        void window.api.refreshPacks().then((c) => c && (void useStore.getState().loadWorks(), void useStore.getState().loadGroups()))
         void native.overlayStatus().then((o) => useStore.setState({ overlay: o }))
       })
     ]

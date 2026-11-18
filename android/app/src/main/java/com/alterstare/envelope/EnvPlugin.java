@@ -471,7 +471,7 @@ public class EnvPlugin extends Plugin {
             if (cover != null && !cover.isEmpty()) {
                 try {
                     byte[] raw = Vfs.isRemote(cover) ? ImgCache.nas(cover) : Vfs.read(cover);
-                    art = ImgCache.thumb(raw, 512);
+                    art = squareArt(ImgCache.thumb(raw, 512));
                 } catch (Exception ignored) {
                     // no picture in the notification
                 }
@@ -482,6 +482,32 @@ public class EnvPlugin extends Plugin {
                 call.resolve();
             });
         });
+    }
+
+    // The notification / lock screen show artwork square (cropped to fill): a
+    // non-square cover goes in whole over a blurred copy of itself, as the
+    // library cards show it.
+    private static byte[] squareArt(byte[] pic) throws IOException {
+        android.graphics.Bitmap src = android.graphics.BitmapFactory.decodeByteArray(pic, 0, pic.length);
+        if (src == null) throw new IOException("decode failed");
+        int w = src.getWidth(), h = src.getHeight(), n = Math.max(w, h);
+        if (Math.abs(w - h) <= 2) return pic;
+        android.graphics.Bitmap out = android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas c = new android.graphics.Canvas(out);
+        android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+        // blur: down to a few pixels and back up (filtered), a little darker
+        float k = (float) n / Math.min(w, h);
+        android.graphics.Bitmap tiny = android.graphics.Bitmap.createScaledBitmap(src, Math.max(1, Math.round(w * k / 24)), Math.max(1, Math.round(h * k / 24)), true);
+        android.graphics.Rect fill = new android.graphics.Rect(Math.round((n - w * k) / 2), Math.round((n - h * k) / 2), Math.round((n + w * k) / 2), Math.round((n + h * k) / 2));
+        c.drawBitmap(tiny, null, fill, p);
+        c.drawColor(0x33000000);
+        c.drawBitmap(src, (n - w) / 2f, (n - h) / 2f, p);
+        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+        out.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, bo);
+        src.recycle();
+        tiny.recycle();
+        out.recycle();
+        return bo.toByteArray();
     }
 
     // {op: play | pause | seek | seekTo | next | prev | rate | repeat | shuffle | stop, value}
