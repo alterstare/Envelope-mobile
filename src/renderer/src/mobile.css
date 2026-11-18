@@ -340,3 +340,18 @@ textarea,
 .stage-tools {
   opacity: 1;
 }
+
+/* 평점: unset stars readable on any backdrop (the album page's is the cover's
+   colour) — darker in the light theme, lighter in the dark one */
+.star,
+:root[data-theme='light'] .star {
+  color: var(--muted);
+}
+:root[data-theme='dark'] .star {
+  color: var(--text-dim);
+}
+.star.on,
+:root[data-theme='light'] .star.on,
+:root[data-theme='dark'] .star.on {
+  color: #ffc53d;
+}

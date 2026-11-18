@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { JSX, ReactNode } from 'react'
 import { useStore } from '../store'
+import { useBack } from '../touch'
 import {
   AddIcon,
   FavoriteIcon,
@@ -96,18 +97,19 @@ export function Cover({ path, className, full }: { path: string | null; classNam
   )
 }
 
-// 평점: click a star to set, the same star again to clear.
+// 평점: tap a star to set, the same star again to clear. (No hover preview on
+// the phone: a tap fires mouseenter and nothing ever leaves, so the preview
+// stuck and hid the real value.)
 export function Stars({ id, rank }: { id: number; rank: number }): JSX.Element {
-  const [hover, setHover] = useState(0)
   const set = (n: number): void => {
     const r = n === rank ? 0 : n
     void window.api.setRank([id], r)
     useStore.getState().patchWork(id, { rank: r })
   }
   return (
-    <span className="stars" onMouseLeave={() => setHover(0)} onClick={(e) => e.stopPropagation()}>
+    <span className="stars" onClick={(e) => e.stopPropagation()}>
       {[1, 2, 3, 4, 5].map((n) => (
-        <button key={n} className={`star ${n <= (hover || rank) ? 'on' : ''}`} onMouseEnter={() => setHover(n)} onClick={() => set(n)} title={`평점 ${n}`}>
+        <button key={n} className={`star ${n <= rank ? 'on' : ''}`} onClick={() => set(n)} title={`평점 ${n}`}>
           <StarIcon />
         </button>
       ))}
@@ -205,6 +207,7 @@ export function usePopover(): {
   const [open, setOpen] = useState(false)
   const ex = useExit(open)
   const ref = useRef<HTMLDivElement>(null)
+  useBack(open, () => setOpen(false))
   useEffect(() => {
     if (!open) return
     return closeOnOutside((n) => !!n && !!ref.current?.contains(n), () => setOpen(false))
@@ -272,6 +275,7 @@ export function Popover({
 }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ left: number; top: number }>({ left: -9999, top: -9999 })
+  useBack(!closing, onClose) // Android back closes it
   useLayoutEffect(() => {
     const r = anchor.getBoundingClientRect()
     const el = ref.current
@@ -332,7 +336,8 @@ export function GroupButton({ id, groupIds }: { id: number; groupIds: number[] }
             </Check>
           ))}
           <div className="grp-new">
-            <input value={name} autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void create()} placeholder="새 그룹 이름" />
+            {/* no autoFocus: on a phone the keyboard would come up over the list */}
+            <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void create()} placeholder="새 그룹 이름" />
             <button className="mini icon" title="그룹 만들기" onClick={() => void create()}>
               <AddIcon />
             </button>
@@ -380,6 +385,7 @@ export function Confirm({
   onAlt?: () => void
   onCancel: () => void
 }): JSX.Element {
+  useBack(true, onCancel)
   useEffect(() => {
     const k = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onCancel()
