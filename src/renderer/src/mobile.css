@@ -355,3 +355,40 @@ textarea,
 :root[data-theme='dark'] .star.on {
   color: #ffc53d;
 }
+
+/* work page / settings: the top-edge buttons (뒤로 · 듣기 기록) 1.5× (30 → 45px,
+   icon 17 → 25.5px) — finger-sized */
+.wp-top .mini.icon {
+  width: 45px;
+  height: 45px;
+}
+.wp-top .mini.icon .micon {
+  font-size: 25.5px;
+  width: 25.5px;
+  height: 25.5px;
+}
+
+/* 지금 재생, the controls under the line: a little taller; the small-button
+   row twice as far from the transport (8 → 16px) and its buttons 1.5× further
+   apart (left 11 → 16.5px, right 13.2 → 19.8px; dividers stay centred) */
+.mn-bar {
+  padding-bottom: 12px;
+}
+.mn-bar .mn-seek {
+  margin-top: 14px;
+}
+.mn-util {
+  margin-top: 16px;
+}
+.mn-util > .flat-group:first-child > * + * {
+  margin-left: 16.5px;
+}
+.mn-util > .flat-group:first-child > * + *::before {
+  left: -8.75px;
+}
+.mn-util > .flat-group:last-child > * + * {
+  margin-left: 19.8px;
+}
+.mn-util > .flat-group:last-child > * + *::before {
+  left: -10.4px;
+}
