@@ -326,6 +326,13 @@ textarea,
 .art-play {
   opacity: 1;
   transform: none;
+  right: 12px;
+  bottom: 12px;
+}
+/* one big picture per row: the play button 64px (지금 재생's big play), not
+   the PC's 50px-on-a-361px-picture */
+.art-play .mini.play-solid {
+  zoom: calc(64 / 36);
 }
 .lrow-play {
   opacity: 1;
