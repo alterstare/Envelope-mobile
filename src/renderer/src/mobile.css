@@ -316,3 +316,20 @@ textarea,
   color: var(--accent);
   font-weight: 600;
 }
+
+/* ---- no hover on a phone ----
+   Hover rules only apply with a real pointer (vite.config.ts moves them into
+   @media (hover: hover)), so nothing appears on hover here. What the PC shows
+   on hover and the phone needs is always shown instead: the play button on the
+   library cards / list covers, and the picture's ‹ › in 지금 재생. 그룹 · ♥ on a
+   picture show only when set (as the PC without hover). */
+.art-play {
+  opacity: 1;
+  transform: none;
+}
+.lrow-play {
+  opacity: 1;
+}
+.stage-tools {
+  opacity: 1;
+}
