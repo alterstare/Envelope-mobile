@@ -7,19 +7,22 @@ import { contentKeyLabel, contentKeys, langName, langOptions } from '../workInfo
 import { playWork } from '../player'
 import { length } from '../format'
 import {
+  AddIcon,
   CheckIcon,
+  CloseIcon,
   FavoriteIcon,
-  FilterAltIcon,
   FolderOpenIcon,
   SettingsIcon,
   GridViewIcon,
   LibraryMusicIcon,
   PlayArrowIcon,
   SearchIcon,
+  SortIcon,
   SubtitlesIcon,
   ListIcon
 } from './icons'
-import { Caret, Check, ChipMenu, Cover, Dropdown, FavButton, GroupButton, Pager, Popover, Stars, TagLine, useAnchor, useNarrow } from './ui'
+import { Caret, Check, Cover, FavButton, GroupButton, Pager, Stars, TagLine } from './ui'
+import { Sheet } from './SettingsView'
 
 const CHIP_GAP = 17 // px between chips (the divider sits in the middle)
 const SORTS: [LibSort, string][] = [
@@ -276,7 +279,6 @@ export default function Library(): JSX.Element {
   const loadWorks = useStore((s) => s.loadWorks)
   const scan = useStore((s) => s.scan)
   const nowId = useStore((s) => s.now?.work.id)
-  const narrow = useNarrow()
   // narrow grid: 2 columns while every card's meta line fits beside its play
   // button; once one doesn't, 1 column (until the page is wider than that)
   const homeRef = useRef<HTMLDivElement>(null)
@@ -343,10 +345,11 @@ export default function Library(): JSX.Element {
     })
     if (cut) setOneColBelow(el.clientWidth)
   })
-  const filterPop = useAnchor()
+  // 정렬 · 분류 open as bottom sheets (Sorta 모바일)
+  const [sortOpen, setSortOpen] = useState(false)
+  const [filterOpen, setFilterOpen] = useState(false)
   const chipsRef = useRef<HTMLDivElement>(null)
-  const need = useRef(0) // width of the full chip row
-  const [tight, setTight] = useState(false)
+  // the chip row stays on one line: shrinks (down to 90%) when it would overflow
   useLayoutEffect(() => {
     const el = chipsRef.current
     if (!el) return
@@ -354,19 +357,14 @@ export default function Library(): JSX.Element {
       el.style.zoom = '1'
       const kids = [...el.children] as HTMLElement[]
       const total = kids.reduce((n, k) => n + k.offsetWidth, 0) + CHIP_GAP * Math.max(0, kids.length - 1) + 4
-      if (!tight) need.current = total
-      // the 분류 menus fold into Filter Alt exactly when the window is small (grid ≤ 2 columns);
-      // until then the full row shrinks (down to 90%) to stay on one line
-      const t = narrow
-      if (t !== tight) return setTight(t)
       el.style.zoom = String(Math.max(0.9, Math.min(1, el.clientWidth / total)))
     }
     check()
     const ro = new ResizeObserver(check)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [tight, narrow])
-  // typed text; the list follows on Enter / the search button (Halftone)
+  }, [])
+  // typed text; the list follows on Enter (the keyboard's search key)
   const [draft, setDraft] = useState(query)
   useEffect(() => setDraft(query), [query])
 
@@ -480,22 +478,6 @@ export default function Library(): JSX.Element {
   const listenActive = !Object.values(filter.listen).every(Boolean)
   const langActive = Object.values(filter.content).includes(false) || Object.values(filter.voice).includes(false)
   const ageActive = !Object.values(filter.age).every(Boolean)
-  const filterChips = (
-    <>
-      <ChipMenu label="듣기 상태" active={listenActive}>
-        {listenChecks}
-      </ChipMenu>
-      <ChipMenu label="언어 분류" active={langActive}>
-        {langChecks}
-      </ChipMenu>
-      <ChipMenu label="연령 분류" active={ageActive}>
-        {ageChecks}
-      </ChipMenu>
-      <ChipMenu label="그룹 분류" active={groupActive}>
-        {groupChecks}
-      </ChipMenu>
-    </>
-  )
   const anyFilter = listenActive || langActive || ageActive || groupActive
   return (
     <div className={`home ${oneCol ? 'one-col' : ''} ${compactCards ? 'compact-cards' : ''}`} ref={homeRef} onScroll={(e) => !restoring.current && saveAnchor(e.currentTarget)}>
@@ -507,45 +489,36 @@ export default function Library(): JSX.Element {
           </button>
         </div>
         <h1>라이브러리</h1>
-        <div className="search-row">
-          {!tight && (
-            <Dropdown<LibSort>
-              value={settings?.libSort ?? 'recent'}
-              options={SORTS}
-              onChange={(v) => void saveSettings({ libSort: v })}
-              title="정렬"
-            />
+        {/* the search box alone; 정렬 = the sort icon at its right end (Sorta 모바일) */}
+        <form
+          className="search-row m-search"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setQuery(draft.trim())
+            ;(document.activeElement as HTMLElement | null)?.blur()
+          }}
+        >
+          <SearchIcon />
+          <input
+            id="lib-search"
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value)
+              if (!e.target.value) setQuery('')
+            }}
+            placeholder="제목 · 서클 · 성우 · 태그 검색"
+            enterKeyHint="search"
+            spellCheck={false}
+          />
+          {draft && (
+            <button type="button" className="search-clear" title="지우기" onClick={() => (setDraft(''), setQuery(''))}>
+              <CloseIcon />
+            </button>
           )}
-          {/* htmlFor: the input is the label's control (not the filter button) */}
-          <label className="search" htmlFor="lib-search">
-            {tight ? (
-              <button
-                className={`search-filter ${anyFilter ? 'on' : ''} ${filterPop.open ? 'open' : ''}`}
-                title="분류 (듣기 상태 · 언어 · 자막 · 그룹)"
-                onClick={(e) => (e.preventDefault(), filterPop.toggle(e.currentTarget))}
-              >
-                <FilterAltIcon />
-              </button>
-            ) : (
-              <SearchIcon />
-            )}
-            <input
-              id="lib-search"
-              value={draft}
-              onChange={(e) => {
-                setDraft(e.target.value)
-                if (!e.target.value) setQuery('')
-              }}
-              onKeyDown={(e) => e.key === 'Enter' && (setQuery(draft.trim()), e.currentTarget.blur())}
-              placeholder="검색"
-              enterKeyHint="search"
-              spellCheck={false}
-            />
-          </label>
-          <button className="search-go" title="검색" onClick={() => setQuery(draft.trim())}>
-            <SearchIcon />
+          <button type="button" className="search-sort" title="정렬" onClick={() => setSortOpen(true)}>
+            <SortIcon />
           </button>
-        </div>
+        </form>
         <div className="chips" ref={chipsRef}>
           <button
             className="chip icon"
@@ -567,45 +540,49 @@ export default function Library(): JSX.Element {
           <button className={`chip ${filter.favorites ? 'active' : ''}`} onClick={() => setFilter({ favorites: !filter.favorites })}>
             <FavoriteIcon className="fav-ico" /> 즐겨찾기 {favCount}
           </button>
-          {!tight && filterChips}
+          {/* 분류: 듣기 상태 · 언어 · 연령 · 그룹 in a sheet */}
+          <button className={`chip icon ${anyFilter ? 'active' : ''}`} title="분류 (듣기 상태 · 언어 · 연령 · 그룹)" onClick={() => setFilterOpen(true)}>
+            <AddIcon />
+          </button>
         </div>
-        {tight && filterPop.anchor && (
-          <Popover anchor={filterPop.anchor} closing={filterPop.closing} onClose={filterPop.close}>
-            <div className="filter-pop">
-              {tight && (
-                <section>
-                  <h4>정렬</h4>
-                  {SORTS.map(([v, l]) => (
-                    <button
-                      key={v}
-                      className={`dd-opt ${(settings?.libSort ?? 'recent') === v ? 'on' : ''}`}
-                      onClick={() => void saveSettings({ libSort: v })}
-                    >
-                      {l}
-                    </button>
-                  ))}
-                </section>
-              )}
-              <section>
-                <h4>듣기 상태</h4>
-                {listenChecks}
-              </section>
-              <section>
-                <h4>언어 분류</h4>
-                {langChecks}
-              </section>
-              <section>
-                <h4>연령 분류</h4>
-                {ageChecks}
-              </section>
-              <section>
-                <h4>그룹 분류</h4>
-                {groupChecks}
-              </section>
-            </div>
-          </Popover>
-        )}
       </div>
+      {sortOpen && (
+        <Sheet title="정렬" onClose={() => setSortOpen(false)}>
+          <div className="fb-list">
+            {SORTS.map(([v, l]) => (
+              <button
+                key={v}
+                className={`dd-opt ${(settings?.libSort ?? 'recent') === v ? 'on' : ''}`}
+                onClick={() => (setSortOpen(false), void saveSettings({ libSort: v }))}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+        </Sheet>
+      )}
+      {filterOpen && (
+        <Sheet title="분류" onClose={() => setFilterOpen(false)}>
+          <div className="filter-sheet">
+            <section>
+              <h4>듣기 상태</h4>
+              {listenChecks}
+            </section>
+            <section>
+              <h4>언어 분류</h4>
+              {langChecks}
+            </section>
+            <section>
+              <h4>연령 분류</h4>
+              {ageChecks}
+            </section>
+            <section>
+              <h4>그룹 분류</h4>
+              {groupChecks}
+            </section>
+          </div>
+        </Sheet>
+      )}
       {scanning && (
         <div className="scan-line">
           <span>라이브러리 스캔 {scan.total ? `${scan.done} / ${scan.total}` : ''}</span>

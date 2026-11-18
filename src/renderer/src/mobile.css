@@ -239,3 +239,80 @@ textarea,
 .mnow .mn-util .flat-group {
   flex-wrap: nowrap;
 }
+
+/* library search (Sorta 모바일's): the box alone — search icon, field, ×
+   while typed, and the sort icon at its right end (정렬 sheet). Box = the
+   library search box (44px pill, --bg-2, 1px line, purple when focused). */
+.home-head .m-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 5px 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--muted);
+}
+.home-head .m-search:focus-within {
+  border-color: var(--accent);
+}
+.home-head .m-search > .micon {
+  font-size: 16px;
+  flex: none;
+}
+.home-head .m-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.home-head .m-search button {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tag);
+  font-size: 20px;
+}
+.home-head .m-search button:active {
+  background: var(--accent-hover);
+  color: var(--text-hover);
+}
+
+/* 정렬 / 분류 sheets */
+.sheet .dd-opt {
+  min-height: 44px;
+  font-size: 15px;
+}
+.filter-sheet section + section {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.filter-sheet h4 {
+  margin: 8px 6px 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+.filter-sheet .check {
+  min-height: 40px;
+  font-size: 14px;
+}
+/* the current option: purple text (Halftone dropdown), no fill */
+.sheet .dd-opt.on {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+}
