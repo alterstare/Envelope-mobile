@@ -306,16 +306,6 @@ export default function Library(): JSX.Element {
       stop()
     }
   }, [])
-  const [homeW, setHomeW] = useState(0)
-  const [oneColBelow, setOneColBelow] = useState(0)
-  useLayoutEffect(() => {
-    const el = homeRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => setHomeW(el.clientWidth))
-    ro.observe(el)
-    setHomeW(el.clientWidth)
-    return () => ro.disconnect()
-  })
   // columns of the grid as laid out: 2 or fewer → compact cards
   const [cols, setCols] = useState(4)
   useLayoutEffect(() => {
@@ -332,19 +322,9 @@ export default function Library(): JSX.Element {
     }
   })
   const compactCards = cols <= 2
-  const oneCol = compactCards && homeW > 0 && homeW <= oneColBelow
-  useLayoutEffect(() => {
-    const el = homeRef.current
-    if (!el || !compactCards || oneCol) return
-    // judge only the layout really on screen: compact cards in 2 columns
-    const g = el.querySelector<HTMLElement>('.tiles, .shelf-row')
-    if (!el.classList.contains('compact-cards') || !g || getComputedStyle(g).gridTemplateColumns.split(' ').length !== 2) return
-    const cut = [...el.querySelectorAll<HTMLElement>('.tile-meta')].some((m) => {
-      const code = m.querySelector<HTMLElement>('.meta-code')
-      return m.scrollWidth > m.clientWidth + 1 || (!!code && code.scrollWidth > code.clientWidth + 1)
-    })
-    if (cut) setOneColBelow(el.clientWidth)
-  })
+  // the phone = Envelope's small window at phone widths: one card per row
+  // (there the LP bar takes room and no meta line fits beside 2 columns)
+  const oneCol = true
   // 정렬 · 분류 open as bottom sheets (Sorta 모바일)
   const [sortOpen, setSortOpen] = useState(false)
   const [filterOpen, setFilterOpen] = useState(false)
