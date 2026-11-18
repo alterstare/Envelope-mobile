@@ -1,0 +1,33 @@
+{
+  "name": "envelope-mobile",
+  "version": "0.1.0",
+  "description": "Envelope for Android (Capacitor): the doujin voice player on a phone, works from a NAS (SMB / WebDAV) or a phone folder, subtitles floating over other apps",
+  "author": "alterstare",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "sync": "vite build && cap sync android",
+    "icons": "node scripts/make-icons.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sharp": "^0.33.5",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

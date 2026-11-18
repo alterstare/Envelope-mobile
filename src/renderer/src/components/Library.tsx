@@ -1,0 +1,648 @@
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { JSX } from 'react'
+import { ALL_FILTER, listenState, useStore } from '../store'
+import type { LibFilter } from '../store'
+import type { LibSort, WorkSummary } from '../../../shared/types'
+import { contentKeyLabel, contentKeys, langName, langOptions } from '../workInfo'
+import { playWork } from '../player'
+import { length } from '../format'
+import {
+  CheckIcon,
+  FavoriteIcon,
+  FilterAltIcon,
+  FolderOpenIcon,
+  SettingsIcon,
+  GridViewIcon,
+  LibraryMusicIcon,
+  PlayArrowIcon,
+  SearchIcon,
+  SubtitlesIcon,
+  ListIcon
+} from './icons'
+import { Caret, Check, ChipMenu, Cover, Dropdown, FavButton, GroupButton, Pager, Popover, Stars, TagLine, useAnchor, useNarrow } from './ui'
+
+const CHIP_GAP = 17 // px between chips (the divider sits in the middle)
+const SORTS: [LibSort, string][] = [
+  ['recent', '최근 재생'],
+  ['added', '추가한 날짜'],
+  ['title', '제목'],
+  ['code', '작품 코드'],
+  ['length', '재생 시간'],
+  ['rank', '평점'],
+  ['plays', '감상 횟수'],
+  ['random', '무작위']
+]
+const AGES: ['r18' | 'general' | 'unknown', string][] = [
+  ['r18', 'R18'],
+  ['general', '일반'],
+  ['unknown', '연령 미확인']
+]
+
+// Where the library was scrolled to (kept while the app runs): the card at
+// the top of the view and how far it sat from the top — the layout can come
+// back slightly different (이어 듣기 row, card sizes measured after the first
+// paint), so the card is lined up again rather than a pixel offset reused.
+const libAnchor = { id: null as string | null, nth: 0, offset: 0, top: 0 }
+const ITEM = '[data-wid]'
+function saveAnchor(home: HTMLElement): void {
+  const top = home.getBoundingClientRect().top
+  const items = [...home.querySelectorAll<HTMLElement>(ITEM)]
+  const first = items.find((x) => x.getBoundingClientRect().bottom > top + 1)
+  libAnchor.top = home.scrollTop
+  libAnchor.id = home.scrollTop > 0 && first ? first.dataset.wid! : null
+  libAnchor.nth = first ? items.filter((x) => x.dataset.wid === first.dataset.wid).indexOf(first) : 0
+  libAnchor.offset = first ? first.getBoundingClientRect().top - top : 0
+}
+function restoreAnchor(home: HTMLElement): void {
+  if (!libAnchor.id) {
+    home.scrollTop = libAnchor.top
+    return
+  }
+  const el = [...home.querySelectorAll<HTMLElement>(`[data-wid="${libAnchor.id}"]`)][libAnchor.nth]
+  if (!el) return
+  home.scrollTop += el.getBoundingClientRect().top - home.getBoundingClientRect().top - libAnchor.offset
+}
+
+// a 언어 분류 tick: unticked keys are kept as false, ticked ones dropped
+// (missing = shown, so a language new to the library starts ticked)
+function tick(m: Record<string, boolean>, k: string, on: boolean): Record<string, boolean> {
+  const next = { ...m }
+  if (on) delete next[k]
+  else next[k] = false
+  return next
+}
+
+function passes(w: WorkSummary, f: LibFilter): boolean {
+  if (f.favorites && !w.favorite) return false
+  if (!f.listen[listenState(w)]) return false
+  if (f.voice[w.content.voice] === false) return false
+  if (!contentKeys(w.content).some((k) => f.content[k] !== false)) return false
+  if (!f.age[w.age ?? 'unknown']) return false
+  if (f.groups) {
+    const inGroup = w.groupIds.some((g) => f.groups!.includes(g))
+    if (!inGroup && !(f.ungrouped && !w.groupIds.length)) return false
+  }
+  return true
+}
+
+// Picture shown whole (contain) over a blurred copy of itself, so covers of any
+// shape fit the 4:3 frame without cropping.
+export function Art({ path, children }: { path: string | null; children?: React.ReactNode }): JSX.Element {
+  const url = path ? window.api.thumbUrl(path) : null
+  return (
+    <div className="art">
+      {url ? (
+        <>
+          <div className="art-fill" style={{ backgroundImage: `url("${url}")` }} />
+          <img src={url} loading="lazy" decoding="async" alt="" draggable={false} />
+        </>
+      ) : (
+        <LibraryMusicIcon className="cover-ph" />
+      )}
+      {children}
+    </div>
+  )
+}
+
+function PlayButton({ w }: { w: WorkSummary }): JSX.Element {
+  return (
+    <button
+      className="mini icon play-solid"
+      title={listenState(w) === 'listening' && (useStore.getState().settings?.resume ?? true) ? '이어 듣기' : '재생'}
+      onClick={(e) => {
+        e.stopPropagation()
+        void playWork(w.id)
+      }}
+    >
+      <PlayArrowIcon />
+    </button>
+  )
+}
+
+// Code (may be cut short) · then "N트랙 · 길이" with the 자막 mark right after
+// the length, kept together on one line.
+function Meta({ w }: { w: WorkSummary }): JSX.Element {
+  const tail = [`${w.tracks}트랙`, length(w.duration)].filter(Boolean).join(' · ')
+  return (
+    <>
+      {w.code && <span className="meta-code">{w.code} ·&nbsp;</span>}
+      <span className="meta-tail">
+        {tail}
+        {w.subtitled > 0 && (
+          <span className="sub-badge" title={`자막 ${w.subtitled}트랙`}>
+            <SubtitlesIcon />
+          </span>
+        )}
+      </span>
+    </>
+  )
+}
+
+// picture width of a card in the widest 2-column grid (845px window): the
+// reference for the card buttons' size (env.css --art-k)
+const ART_REF_W = 361.5
+
+// Card: picture (with 즐겨찾기 / 그룹 on its top edge, 재생 bottom right) → title → meta → tags → 평점.
+function Tile({ w, nowId }: { w: WorkSummary; nowId?: number }): JSX.Element {
+  const open = useStore((s) => s.openWork)
+  const done = listenState(w) === 'done'
+  return (
+    <div data-wid={w.id} className={`tile ${nowId === w.id ? 'now' : ''} ${w.tags.length ? '' : 'no-tags'}`} onClick={() => void open(w.id)}>
+      <Art path={w.cover}>
+        {done && (
+          <span className="badge-done">
+            <CheckIcon /> 완료
+          </span>
+        )}
+        <div className={`art-tools flat-group ${w.favorite || w.groupIds.length ? 'keep' : ''}`} onClick={(e) => e.stopPropagation()}>
+          <GroupButton id={w.id} groupIds={w.groupIds} />
+          <FavButton id={w.id} on={w.favorite} />
+        </div>
+        {/* play: inside the picture, bottom right, shown on card hover */}
+        <div className="art-play" onClick={(e) => e.stopPropagation()}>
+          <PlayButton w={w} />
+        </div>
+      </Art>
+      {/* 제목 / 메타 / 태그 / 평점 (평점은 카드 맨 아래, 2열 이하는 숨김) */}
+      <div className="tile-body">
+        <div className="tile-title">{w.title}</div>
+        <div className="tile-mid">
+          <div className="tile-meta">
+            <Meta w={w} />
+          </div>
+        </div>
+        {/* no tags: the meta line moves down to the tag line's place and the
+            title takes the room it leaves (env.css .no-tags) */}
+        {w.tags.length > 0 && <TagLine tags={w.tags} />}
+        <div className="tile-stars">
+          <Stars id={w.id} rank={w.rank} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Row({ w, nowId }: { w: WorkSummary; nowId?: number }): JSX.Element {
+  const open = useStore((s) => s.openWork)
+  const st = listenState(w)
+  return (
+    <div data-wid={w.id} className={`lrow ${nowId === w.id ? 'now' : ''}`} onClick={() => void open(w.id)}>
+      {/* cover = the play button (row hover shows it, cover hover turns it purple);
+          the rest of the row opens the album */}
+      <button
+        className="lrow-cover"
+        title={listenState(w) === 'listening' && (useStore.getState().settings?.resume ?? true) ? '이어 듣기' : '재생'}
+        onClick={(e) => {
+          e.stopPropagation()
+          void playWork(w.id)
+        }}
+      >
+        <Cover path={w.cover} />
+        <span className="lrow-play">
+          <PlayArrowIcon />
+        </span>
+      </button>
+      <div className="lrow-main">
+        <div className="lrow-title">{w.title}</div>
+        <div className="lrow-meta">
+          <Meta w={w} />
+        </div>
+      </div>
+      <span className="lrow-state">
+        {st === 'done' ? (
+          <span className="accent">
+            <CheckIcon /> 완료
+          </span>
+        ) : st === 'listening' ? (
+          `${w.finished} / ${w.tracks}트랙`
+        ) : (
+          ''
+        )}
+      </span>
+      <Stars id={w.id} rank={w.rank} />
+      <div className="flat-group lrow-tools" onClick={(e) => e.stopPropagation()}>
+        <span className="lrow-collect">
+          <GroupButton id={w.id} groupIds={w.groupIds} />
+        </span>
+        <span className="lrow-collect">
+          <FavButton id={w.id} on={w.favorite} />
+        </span>
+      </div>
+    </div>
+  )
+}
+
+// "이어 듣기": works started but not finished, latest first — one row, as
+// many cards as the grid fits (counted from the laid-out columns; hiding the
+// rest in zero-height rows left their borders showing as a line).
+function Shelf({ works, nowId }: { works: WorkSummary[]; nowId?: number }): JSX.Element | null {
+  const row = useRef<HTMLDivElement>(null)
+  const [cols, setCols] = useState(12)
+  useLayoutEffect(() => {
+    const el = row.current
+    if (!el) return
+    const count = (): void => setCols(Math.max(1, getComputedStyle(el).gridTemplateColumns.split(' ').length))
+    count()
+    const ro = new ResizeObserver(count)
+    ro.observe(el)
+    return () => ro.disconnect()
+  })
+  const list = works
+    .filter((w) => listenState(w) === 'listening' && w.lastPlayedAt)
+    .sort((a, b) => (b.lastPlayedAt ?? 0) - (a.lastPlayedAt ?? 0))
+    .slice(0, cols)
+  if (!list.length) return null
+  return (
+    <section className="shelf">
+      <h2>이어 듣기</h2>
+      <div className="shelf-row" ref={row}>
+        {list.map((w) => (
+          <Tile key={w.id} w={w} nowId={nowId} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+export default function Library(): JSX.Element {
+  const works = useStore((s) => s.works)
+  const groups = useStore((s) => s.groups)
+  const query = useStore((s) => s.query)
+  const setQuery = useStore((s) => s.setQuery)
+  const filter = useStore((s) => s.filter)
+  const setFilter = useStore((s) => s.setFilter)
+  const settings = useStore((s) => s.settings)
+  const saveSettings = useStore((s) => s.saveSettings)
+  const loadWorks = useStore((s) => s.loadWorks)
+  const scan = useStore((s) => s.scan)
+  const nowId = useStore((s) => s.now?.work.id)
+  const narrow = useNarrow()
+  // narrow grid: 2 columns while every card's meta line fits beside its play
+  // button; once one doesn't, 1 column (until the page is wider than that)
+  const homeRef = useRef<HTMLDivElement>(null)
+  // back to where the list was when the library is opened again: lined up
+  // again while the layout settles (scroll events then aren't recorded);
+  // the user scrolling ends it at once
+  const restoring = useRef(true)
+  useLayoutEffect(() => {
+    const el = homeRef.current
+    if (!el) return
+    restoring.current = true
+    restoreAnchor(el)
+    const ro = new ResizeObserver(() => restoring.current && restoreAnchor(el))
+    for (const c of el.children) ro.observe(c)
+    const stop = (): void => {
+      restoring.current = false
+      ro.disconnect()
+    }
+    const t = setTimeout(stop, 1200)
+    el.addEventListener('wheel', stop, { once: true, passive: true })
+    el.addEventListener('pointerdown', stop, { once: true })
+    el.addEventListener('keydown', stop, { once: true })
+    return () => {
+      clearTimeout(t)
+      stop()
+    }
+  }, [])
+  const [homeW, setHomeW] = useState(0)
+  const [oneColBelow, setOneColBelow] = useState(0)
+  useLayoutEffect(() => {
+    const el = homeRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setHomeW(el.clientWidth))
+    ro.observe(el)
+    setHomeW(el.clientWidth)
+    return () => ro.disconnect()
+  })
+  // columns of the grid as laid out: 2 or fewer → compact cards
+  const [cols, setCols] = useState(4)
+  useLayoutEffect(() => {
+    const g = homeRef.current?.querySelector<HTMLElement>('.tiles, .shelf-row')
+    const n = g ? getComputedStyle(g).gridTemplateColumns.split(' ').length : 4
+    if (n !== cols) setCols(n)
+  })
+  // card buttons (재생 · 그룹 · ♥) keep the size they have against the picture
+  // in the widest 2-column grid (picture 361.5px) at every column count
+  useLayoutEffect(() => {
+    for (const g of homeRef.current?.querySelectorAll<HTMLElement>('.tiles, .shelf-row') ?? []) {
+      const art = g.querySelector<HTMLElement>('.tile .art')
+      if (art?.clientWidth) g.style.setProperty('--art-k', String(art.clientWidth / ART_REF_W))
+    }
+  })
+  const compactCards = cols <= 2
+  const oneCol = compactCards && homeW > 0 && homeW <= oneColBelow
+  useLayoutEffect(() => {
+    const el = homeRef.current
+    if (!el || !compactCards || oneCol) return
+    // judge only the layout really on screen: compact cards in 2 columns
+    const g = el.querySelector<HTMLElement>('.tiles, .shelf-row')
+    if (!el.classList.contains('compact-cards') || !g || getComputedStyle(g).gridTemplateColumns.split(' ').length !== 2) return
+    const cut = [...el.querySelectorAll<HTMLElement>('.tile-meta')].some((m) => {
+      const code = m.querySelector<HTMLElement>('.meta-code')
+      return m.scrollWidth > m.clientWidth + 1 || (!!code && code.scrollWidth > code.clientWidth + 1)
+    })
+    if (cut) setOneColBelow(el.clientWidth)
+  })
+  const filterPop = useAnchor()
+  const chipsRef = useRef<HTMLDivElement>(null)
+  const need = useRef(0) // width of the full chip row
+  const [tight, setTight] = useState(false)
+  useLayoutEffect(() => {
+    const el = chipsRef.current
+    if (!el) return
+    const check = (): void => {
+      el.style.zoom = '1'
+      const kids = [...el.children] as HTMLElement[]
+      const total = kids.reduce((n, k) => n + k.offsetWidth, 0) + CHIP_GAP * Math.max(0, kids.length - 1) + 4
+      if (!tight) need.current = total
+      // the 분류 menus fold into Filter Alt exactly when the window is small (grid ≤ 2 columns);
+      // until then the full row shrinks (down to 90%) to stay on one line
+      const t = narrow
+      if (t !== tight) return setTight(t)
+      el.style.zoom = String(Math.max(0.9, Math.min(1, el.clientWidth / total)))
+    }
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [tight, narrow])
+  // typed text; the list follows on Enter / the search button (Halftone)
+  const [draft, setDraft] = useState(query)
+  useEffect(() => setDraft(query), [query])
+
+  useEffect(() => {
+    void loadWorks()
+  }, [loadWorks, settings?.libSort, settings?.libDir, settings?.formatPref, settings?.sePref])
+
+  const list = useMemo(() => {
+    const q = query.trim().normalize('NFKC').toLowerCase()
+    const text = (w: WorkSummary): string =>
+      [w.code, w.title, w.folderTitle, w.circle, ...w.voices, ...w.tags.flatMap((t) => [t.ko, t.ja])].filter(Boolean).join(' ').normalize('NFKC').toLowerCase()
+    return works.filter((w) => passes(w, filter) && (!q || text(w).includes(q)))
+  }, [works, query, filter])
+  // pages of pageSize (Halftone); the page is kept while the list stays the
+  // same (search / filters / sort / size), and goes back to 1 when it changes
+  const pageSize = Math.max(1, settings?.pageSize ?? 50)
+  const libPage = useStore((s) => s.libPage)
+  const pageKey = JSON.stringify([query, filter, settings?.libSort, settings?.libDir, pageSize])
+  const lastPage = Math.max(0, Math.ceil(list.length / pageSize) - 1)
+  const page = libPage.key === pageKey ? Math.min(libPage.page, lastPage) : 0
+  const shown = list.slice(page * pageSize, page * pageSize + pageSize)
+  const setPage = (p: number): void => {
+    useStore.setState({ libPage: { key: pageKey, page: p } })
+    if (homeRef.current) homeRef.current.scrollTop = 0
+  }
+  const favCount = works.filter((w) => w.favorite).length
+  const filtered = !!query.trim() || JSON.stringify(filter) !== JSON.stringify(ALL_FILTER)
+
+  if (settings && !settings.sources.length)
+    return (
+      <div className="empty">
+        <LibraryMusicIcon className="hero-icon" />
+        <h2>라이브러리 폴더를 추가하세요</h2>
+        <p className="hint">
+          NAS(SMB · WebDAV)나 휴대폰에서 작품 폴더들이 들어 있는 폴더를 고릅니다. PC의 Envelope가 그 폴더에 모바일 정보 파일을 남겨 두었으면 그것을 읽고(복구 · 번역한 이름, DLsite 정보, 프로그램 안의 자막), 없으면 폴더를 직접 읽습니다. 파일은 바꾸지 않습니다.
+        </p>
+        <button className="btn primary" onClick={() => useStore.getState().setView('settings')}>
+          <FolderOpenIcon /> 폴더 추가
+        </button>
+      </div>
+    )
+
+  const scanning = scan && (scan.state === 'running' || scan.state === 'queued')
+  const layout = settings?.libLayout ?? 'grid'
+  const groupActive = filter.groups !== null
+  const listenChecks = (
+    <>
+      {(
+        [
+          ['new', '아직 듣지 않은 작품'],
+          ['listening', '듣는 중인 작품'],
+          ['done', '다 들은 작품']
+        ] as const
+      ).map(([k, label]) => (
+        <Check key={k} checked={filter.listen[k]} onChange={(b) => setFilter({ listen: { ...filter.listen, [k]: b } })}>
+          {label}
+        </Check>
+      ))}
+    </>
+  )
+  // 언어 분류: the voice's language, then what the folder holds (and the
+  // program made — [자체 생성] counts); only languages some work has
+  const langs = langOptions(works)
+  const langChecks = (
+    <>
+      {langs.voices.map((l) => (
+        <Check key={l} checked={filter.voice[l] !== false} onChange={(b) => setFilter({ voice: tick(filter.voice, l, b) })}>
+          {langName(l)} 음성
+        </Check>
+      ))}
+      <div className="check-sep" />
+      {langs.content.map((k) => (
+        <Check key={k} checked={filter.content[k] !== false} onChange={(b) => setFilter({ content: tick(filter.content, k, b) })}>
+          {contentKeyLabel(k)}
+        </Check>
+      ))}
+    </>
+  )
+  const ageChecks = (
+    <>
+      {AGES.map(([k, label]) => (
+        <Check key={k} checked={filter.age[k]} onChange={(b) => setFilter({ age: { ...filter.age, [k]: b } })}>
+          {label}
+        </Check>
+      ))}
+    </>
+  )
+  const groupChecks = (
+    <>
+      {groups.length === 0 && <div className="hint panel-hint">작품의 그룹 버튼으로 그룹을 만들 수 있습니다.</div>}
+      {groups.map((g) => (
+        <Check
+          key={g.id}
+          checked={filter.groups === null || filter.groups.includes(g.id)}
+          onChange={(b) => {
+            const cur = filter.groups ?? groups.map((x) => x.id)
+            const next = b ? [...cur, g.id] : cur.filter((x) => x !== g.id)
+            setFilter({ groups: next.length === groups.length && filter.ungrouped ? null : next })
+          }}
+        >
+          {g.name} <span className="hint">{g.count}</span>
+        </Check>
+      ))}
+      {groups.length > 0 && (
+        <Check checked={filter.ungrouped} onChange={(b) => setFilter({ ungrouped: b, groups: filter.groups ?? groups.map((x) => x.id) })}>
+          그룹 없는 작품
+        </Check>
+      )}
+    </>
+  )
+  const listenActive = !Object.values(filter.listen).every(Boolean)
+  const langActive = Object.values(filter.content).includes(false) || Object.values(filter.voice).includes(false)
+  const ageActive = !Object.values(filter.age).every(Boolean)
+  const filterChips = (
+    <>
+      <ChipMenu label="듣기 상태" active={listenActive}>
+        {listenChecks}
+      </ChipMenu>
+      <ChipMenu label="언어 분류" active={langActive}>
+        {langChecks}
+      </ChipMenu>
+      <ChipMenu label="연령 분류" active={ageActive}>
+        {ageChecks}
+      </ChipMenu>
+      <ChipMenu label="그룹 분류" active={groupActive}>
+        {groupChecks}
+      </ChipMenu>
+    </>
+  )
+  const anyFilter = listenActive || langActive || ageActive || groupActive
+  return (
+    <div className={`home ${oneCol ? 'one-col' : ''} ${compactCards ? 'compact-cards' : ''}`} ref={homeRef} onScroll={(e) => !restoring.current && saveAnchor(e.currentTarget)}>
+      <div className="home-head">
+        <div className="home-top">
+          <div className="badge">Voice</div>
+          <button className="mini icon" title="설정" onClick={() => useStore.getState().setView('settings')}>
+            <SettingsIcon />
+          </button>
+        </div>
+        <h1>라이브러리</h1>
+        <div className="search-row">
+          {!tight && (
+            <Dropdown<LibSort>
+              value={settings?.libSort ?? 'recent'}
+              options={SORTS}
+              onChange={(v) => void saveSettings({ libSort: v })}
+              title="정렬"
+            />
+          )}
+          {/* htmlFor: the input is the label's control (not the filter button) */}
+          <label className="search" htmlFor="lib-search">
+            {tight ? (
+              <button
+                className={`search-filter ${anyFilter ? 'on' : ''} ${filterPop.open ? 'open' : ''}`}
+                title="분류 (듣기 상태 · 언어 · 자막 · 그룹)"
+                onClick={(e) => (e.preventDefault(), filterPop.toggle(e.currentTarget))}
+              >
+                <FilterAltIcon />
+              </button>
+            ) : (
+              <SearchIcon />
+            )}
+            <input
+              id="lib-search"
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value)
+                if (!e.target.value) setQuery('')
+              }}
+              onKeyDown={(e) => e.key === 'Enter' && (setQuery(draft.trim()), e.currentTarget.blur())}
+              placeholder="검색"
+              enterKeyHint="search"
+              spellCheck={false}
+            />
+          </label>
+          <button className="search-go" title="검색" onClick={() => setQuery(draft.trim())}>
+            <SearchIcon />
+          </button>
+        </div>
+        <div className="chips" ref={chipsRef}>
+          <button
+            className="chip icon"
+            title={layout === 'grid' ? '격자형' : '목록형'}
+            onClick={() => void saveSettings({ libLayout: layout === 'grid' ? 'list' : 'grid' })}
+          >
+            {layout === 'grid' ? <GridViewIcon /> : <ListIcon />}
+          </button>
+          <button
+            className="chip icon chip-arrow"
+            title={settings?.libDir === 'asc' ? '오름차순' : '내림차순'}
+            onClick={() => void saveSettings({ libDir: settings?.libDir === 'asc' ? 'desc' : 'asc' })}
+          >
+            <Caret up={settings?.libDir === 'asc'} />
+          </button>
+          <button className={`chip ${!filtered ? 'active' : ''}`} onClick={() => (setFilter(ALL_FILTER), setQuery(''), setDraft(''))}>
+            전체 {works.length}
+          </button>
+          <button className={`chip ${filter.favorites ? 'active' : ''}`} onClick={() => setFilter({ favorites: !filter.favorites })}>
+            <FavoriteIcon className="fav-ico" /> 즐겨찾기 {favCount}
+          </button>
+          {!tight && filterChips}
+        </div>
+        {tight && filterPop.anchor && (
+          <Popover anchor={filterPop.anchor} closing={filterPop.closing} onClose={filterPop.close}>
+            <div className="filter-pop">
+              {tight && (
+                <section>
+                  <h4>정렬</h4>
+                  {SORTS.map(([v, l]) => (
+                    <button
+                      key={v}
+                      className={`dd-opt ${(settings?.libSort ?? 'recent') === v ? 'on' : ''}`}
+                      onClick={() => void saveSettings({ libSort: v })}
+                    >
+                      {l}
+                    </button>
+                  ))}
+                </section>
+              )}
+              <section>
+                <h4>듣기 상태</h4>
+                {listenChecks}
+              </section>
+              <section>
+                <h4>언어 분류</h4>
+                {langChecks}
+              </section>
+              <section>
+                <h4>연령 분류</h4>
+                {ageChecks}
+              </section>
+              <section>
+                <h4>그룹 분류</h4>
+                {groupChecks}
+              </section>
+            </div>
+          </Popover>
+        )}
+      </div>
+      {scanning && (
+        <div className="scan-line">
+          <span>라이브러리 스캔 {scan.total ? `${scan.done} / ${scan.total}` : ''}</span>
+          <div className="bar">
+            <div style={{ width: scan.total ? `${(scan.done / scan.total) * 100}%` : '30%' }} />
+          </div>
+        </div>
+      )}
+      {!filtered && <Shelf works={works} nowId={nowId} />}
+      {filtered || works.some((w) => listenState(w) === 'listening') ? (
+        <h2 className="list-head">{filtered ? `작품 ${list.length}` : '모든 작품'}</h2>
+      ) : null}
+      {list.length ? (
+        layout === 'grid' ? (
+          <div className="tiles">
+            {shown.map((w) => (
+              <Tile key={w.id} w={w} nowId={nowId} />
+            ))}
+          </div>
+        ) : (
+          <div className="lrows">
+            {shown.map((w) => (
+              <Row key={w.id} w={w} nowId={nowId} />
+            ))}
+          </div>
+        )
+      ) : (
+        <div className="empty small hint">
+          {filtered ? '조건에 맞는 작품이 없습니다.' : scanning ? '작품을 찾는 중입니다…' : '작품이 없습니다.'}
+        </div>
+      )}
+      {list.length > pageSize && <Pager page={page} lastPage={lastPage} onPage={setPage} />}
+      {list.length > 0 && (
+        <div className="result-count">
+          작품 {list.length}개 · {pageSize}개씩
+        </div>
+      )}
+    </div>
+  )
+}

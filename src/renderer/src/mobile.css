@@ -1,0 +1,241 @@
+/* Envelope 모바일: phone layout over Envelope's own stylesheets (styles.css +
+   env.css are the PC app's, kept as they are so every shared part looks the
+   same — the phone is always the "small window" there). Phone-only bits:
+   touch, safe areas, the library head's 설정 button, bottom sheets. */
+
+html,
+body {
+  overscroll-behavior: none;
+  touch-action: pan-x pan-y;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+input,
+textarea,
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}
+::-webkit-scrollbar {
+  display: none;
+}
+
+/* no LP tab bar on the phone */
+.middle {
+  --lp-w: 0px;
+  --sbw: 0px;
+}
+.app {
+  grid-template-rows: minmax(0, 1fr) auto;
+  padding-top: env(safe-area-inset-top);
+}
+.app > .middle {
+  grid-row: 1;
+}
+.app > .miniplayer {
+  grid-row: 2;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.app:not(.has-now) .middle,
+.app.view-now .middle {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.toast {
+  bottom: calc(16px + env(safe-area-inset-bottom));
+}
+.app.has-now:not(.view-now) .toast {
+  bottom: calc(84px + env(safe-area-inset-bottom));
+}
+
+/* library head: badge on the left, 설정 (round icon button) on the right */
+.home-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.home-top .mini.icon {
+  width: 36px;
+  height: 36px;
+  margin-right: -8px;
+}
+.home-top .mini.icon .micon {
+  font-size: 20px;
+}
+
+/* work page: the resume line under the actions */
+.mw-resume {
+  margin-top: -4px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* settings: the back button above the title, like the work page */
+.settings > .wp-top {
+  margin: 4px -8px 2px;
+}
+.settings .dir .grow {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.settings .dirs .flat-group {
+  flex-wrap: wrap;
+}
+.settings .about {
+  margin-top: 24px;
+  text-align: center;
+}
+
+/* ---- bottom sheet (forms / pickers) ---- */
+.sheet-back {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.32);
+  animation: fade-in var(--t-fast) var(--ease);
+}
+.sheet {
+  width: 100%;
+  max-height: 86dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border-radius: var(--r6) var(--r6) 0 0;
+  padding-bottom: env(safe-area-inset-bottom);
+  animation: sheet-up var(--t-mid) var(--ease);
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(40px);
+    opacity: 0.4;
+  }
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 10px 4px 20px;
+  font-weight: 700;
+  font-size: 16px;
+}
+.sheet-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sheet-body {
+  overflow-y: auto;
+  padding: 0 14px 12px;
+  display: flex;
+  flex-direction: column;
+}
+.conn-tabs {
+  align-self: flex-start;
+  margin: 4px 0 2px 4px;
+}
+.conn-tabs .micon {
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+}
+.sheet-note {
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.sfield {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.sfield .field {
+  height: 42px;
+  border-radius: 999px;
+  padding: 0 16px;
+  font-size: 15px;
+}
+.sheet-check {
+  padding: 8px 6px;
+}
+.sheet-ok {
+  padding: 4px 6px;
+  color: var(--accent);
+}
+.sheet-err {
+  padding: 4px 6px;
+  color: var(--danger);
+  font-size: 13px;
+}
+.fb-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 6px;
+  min-height: 36px;
+  font-weight: 600;
+  word-break: break-all;
+}
+.fb-list {
+  display: flex;
+  flex-direction: column;
+}
+.fb-list .menu-item {
+  min-height: 44px;
+  font-size: 15px;
+}
+.fb-list .menu-item .micon {
+  color: var(--text-dim);
+  font-size: 20px;
+}
+/* sheet buttons = the confirm dialog's (Halftone mobile): flat text at the
+   bottom right, action · middle · close; only the main action coloured */
+.sheet-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 0 0;
+  margin-right: -4px;
+}
+.sheet-foot .grow {
+  flex: 1;
+}
+.sheet-foot .cfm-btn {
+  flex: none;
+  width: auto;
+  min-width: 0;
+  padding: 10px 12px;
+  border: none;
+  border-radius: var(--r3);
+  background: transparent;
+  box-shadow: none;
+  filter: none;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.sheet-foot .cfm-btn:active:not(:disabled) {
+  background: var(--bg-3);
+}
+.sheet-foot .cfm-btn.primary {
+  color: var(--accent);
+}
+.sheet-foot .cfm-btn.danger {
+  color: var(--danger);
+}
+.sheet-foot .cfm-btn:disabled {
+  color: var(--muted);
+}
+
+/* 지금 재생: under the status bar; the utility row keeps its buttons on one line */
+.mnow .mn-util .flat-group {
+  flex-wrap: nowrap;
+}

@@ -1,0 +1,374 @@
+// From Envelope (core/library/scan.ts) — the scan for library folders that
+// have no 모바일 정보 파일 (Envelope's pack is used whenever it is there).
+// Find the works under a library folder, then inside each work sort files
+// into tracks (with their versions: SE on/off × format folders × editions),
+// extras, samples and images. Files are never touched.
+// On the phone: folders are read through the plugin (NAS or phone), no 뷁어
+// repair (needs CP949 encoding) and no length probe (files aren't opened —
+// the player learns the length when a track plays).
+import { native } from '../native'
+import { naturalCompare, nfkc, stem, trackKey, trackNumber } from './normalize'
+import { folderRole, isSampleName, labelKey, seOf } from './roles'
+import type { FolderRole } from './roles'
+import { LANG_SUFFIX, SUB_EXTS, langOfName } from './subtitle'
+import type { SubFile } from '../../shared/types'
+import { splitPath } from '../../shared/split'
+
+const DUP_DIR = '_중복 작품'
+const join = (a: string, b: string): string => `${a.replace(/\/+$/, '')}/${b}`
+const basename = (p: string): string => p.slice(p.replace(/\/+$/, '').lastIndexOf('/') + 1)
+export function extname(p: string): string {
+  const b = basename(p)
+  const i = b.lastIndexOf('.')
+  return i > 0 ? b.slice(i) : ''
+}
+interface Dirent {
+  name: string
+  isFile(): boolean
+  isDirectory(): boolean
+  size: number
+  mtime: number
+}
+
+export const AUDIO_EXTS = new Set(['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.opus'])
+export const VIDEO_EXTS = new Set(['.mp4', '.m4v', '.webm'])
+export const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif'])
+// wav 정리 puts wavs the Recycle Bin can't take here (a network drive), to
+// be deleted by hand; scans skip it like the 중복 작품 folder.
+export const WAV_HOLD_DIR = '_wav 삭제 대기'
+const JUNK = /^(?:thumbs\.db|\.ds_store|desktop\.ini)$|^\._/i
+const CODE = /(?<![a-z0-9])([RVB]J\d{6,8})(?!\d)/i
+// Same track in two groups only if their lengths agree this closely: seconds,
+// or a share of the length (voice-only versions run a few % shorter).
+const MERGE_TOLERANCE_S = 2
+const MERGE_TOLERANCE_RATIO = 0.05
+
+export type Se = 'on' | 'off' | 'unknown'
+export type Role = 'main' | 'extra' | 'sample'
+
+export interface ScannedTrack {
+  path: string
+  title: string // repaired file name without extension
+  ext: string // '.mp3'
+  kind: 'audio' | 'video'
+  role: Role
+  edition: string // '' when the work has one edition
+  editionKey: string
+  se: Se
+  formatDir: string // nearest format folder ("wav"), '' if none
+  groupKey: string // equal for versions of one track
+  sort: number // order of the track's group in the work
+  duration: number | null
+  bitrate: number | null
+  size: number
+  mtime: number
+  mojibake: boolean // its name or a folder on the way was 뷁어
+  relDir: string // repaired folder path inside the work, '/'-joined
+  subs: SubFile[] // subtitle files next to it with the same name
+}
+
+export interface ScannedWork {
+  path: string
+  code: string | null
+  title: string
+  cover: string | null
+  images: string[] // background order
+  tracks: ScannedTrack[]
+  mojibake: boolean
+  addedAt: number | null // folder creation time ("추가순")
+}
+
+export async function readDir(dir: string): Promise<Dirent[]> {
+  try {
+    const { entries } = await native.fsReaddir({ path: dir })
+    return entries
+      .filter((e) => !JUNK.test(e.name) && !e.name.startsWith('.'))
+      .map((e) => ({ name: e.name, size: e.size, mtime: e.mtime, isFile: () => e.isFile, isDirectory: () => e.isDir }))
+  } catch {
+    return []
+  }
+}
+
+async function hasMedia(dir: string, depth = 0): Promise<boolean> {
+  if (depth > 6) return false
+  const entries = await readDir(dir)
+  for (const e of entries) {
+    const ext = extname(e.name).toLowerCase()
+    if (e.isFile() && (AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext))) return true
+  }
+  for (const e of entries) if (e.isDirectory() && (await hasMedia(join(dir, e.name), depth + 1))) return true
+  return false
+}
+
+// Every audio / video file in a work folder (빠른 스캔 compares these with
+// the saved tracks; nothing is opened).
+export async function mediaFiles(dir: string, out: string[] = []): Promise<string[]> {
+  for (const e of await readDir(dir)) {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) await mediaFiles(p, out)
+    else if (e.isFile()) {
+      const ext = extname(e.name).toLowerCase()
+      if (AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext)) out.push(p)
+    }
+  }
+  return out
+}
+
+// Works under a library folder: each folder right below it — or, for a
+// circle-style folder whose children carry work codes, those children.
+export async function findWorks(root: string): Promise<string[]> {
+  const out: string[] = []
+  for (const e of await readDir(root)) {
+    if (!e.isDirectory() || e.name === DUP_DIR || e.name === WAV_HOLD_DIR) continue // 중복 작품 › 제거할 작품 (moved there)
+    const p = join(root, e.name)
+    if (CODE.test(e.name)) {
+      out.push(p)
+      continue
+    }
+    const coded = (await readDir(p)).filter((c) => c.isDirectory() && CODE.test(c.name))
+    if (coded.length) out.push(...coded.map((c) => join(p, c.name)))
+    else if (await hasMedia(p)) out.push(p)
+  }
+  return out.sort(naturalCompare)
+}
+
+interface RawFile {
+  path: string
+  segs: string[] // repaired folder names inside the work
+  name: string // repaired file name
+  mojibake: boolean
+  size: number
+  mtime: number
+}
+
+// parentMoji: the folder itself is 뷁어 (context for short names); anyMoji: any
+// folder on the way is (the track is flagged).
+async function walk(dir: string, segs: string[], out: RawFile[], dirs: string[][]): Promise<void> {
+  for (const e of await readDir(dir)) {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) {
+      dirs.push([...segs, e.name])
+      await walk(p, [...segs, e.name], out, dirs)
+    } else if (e.isFile() && extname(e.name)) out.push({ path: p, segs, name: e.name, mojibake: false, size: e.size, mtime: e.mtime })
+  }
+}
+
+export function workTitle(folder: string): { code: string | null; title: string } {
+  const name = folder
+  const m = name.match(CODE)
+  if (!m) return { code: null, title: name.trim() }
+  const title = name.replace(m[0], '').replace(/^[\s_\-]+|[\s_\-]+$/g, '')
+  return { code: m[1].toUpperCase(), title: title || m[1].toUpperCase() }
+}
+
+export async function scanWork(dir: string, addedAt: number | null = null): Promise<ScannedWork> {
+  const { code, title } = workTitle(basename(dir))
+  const files: RawFile[] = []
+  const dirs: string[][] = []
+  await walk(dir, [], files, dirs)
+
+  // Subtitles by folder + name: "x.vtt", "x.ja.srt", "x.mp3.vtt", "x.wav.vtt".
+  const subKey = (segs: string[], name: string): string => `${segs.join('/')}|${nfkc(name).toLowerCase().trim()}`
+  const subs = new Map<string, { file: RawFile; inner: string }[]>()
+  for (const f of files) {
+    if (!SUB_EXTS.has(extname(f.name).toLowerCase())) continue
+    const base = f.name.slice(0, -extname(f.name).length)
+    const inner = extname(base).toLowerCase() // ".mp3" in "x.mp3.vtt"
+    const k = subKey(f.segs, stem(f.name).replace(LANG_SUFFIX, ''))
+    subs.set(k, [...(subs.get(k) ?? []), { file: f, inner }])
+  }
+
+  const tracks: ScannedTrack[] = []
+  const images: RawFile[] = []
+  for (const f of files) {
+    const ext = extname(f.name).toLowerCase()
+    if (IMAGE_EXTS.has(ext)) images.push(f)
+    if (!AUDIO_EXTS.has(ext) && !VIDEO_EXTS.has(ext)) continue
+    const roles: FolderRole[] = f.segs.map(folderRole)
+    const t = stem(f.name)
+    const role: Role = roles.some((r) => r.sample) || isSampleName(t) ? 'sample' : roles.some((r) => r.extra) ? 'extra' : 'main'
+    const nearest = <K extends 'se' | 'format'>(k: K): FolderRole[K] | null => {
+      for (let i = roles.length - 1; i >= 0; i--) if (roles[i][k]) return roles[i][k]
+      return null
+    }
+    const edition = role === 'main' ? roles.map((r) => r.label).filter(Boolean).join(' / ') : ''
+    tracks.push({
+      path: f.path,
+      title: t,
+      ext,
+      kind: AUDIO_EXTS.has(ext) ? 'audio' : 'video',
+      role,
+      edition,
+      editionKey: labelKey(edition),
+      se: nearest('se') ?? seOf(t) ?? 'unknown',
+      formatDir: nearest('format') ?? '',
+      groupKey: '',
+      sort: 0,
+      duration: null,
+      bitrate: null,
+      size: f.size,
+      mtime: f.mtime,
+      mojibake: f.mojibake,
+      relDir: f.segs.join('/'),
+      // "x.mp3.vtt" before "x.wav.vtt" for x.mp3
+      subs: (subs.get(subKey(f.segs, t)) ?? [])
+        .sort((a, b) => Number(b.inner === ext) - Number(a.inner === ext))
+        .map(({ file }) => ({ path: file.path, lang: langOfName(file.name) }))
+    })
+  }
+
+  // Editions exist only when two folders name different ones; files outside
+  // any edition folder then form their own. One named folder next to loose
+  // files is just the same story with a longer folder name.
+  const named = new Set(tracks.filter((t) => t.role === 'main' && t.editionKey).map((t) => t.editionKey))
+  if (named.size <= 1)
+    for (const t of tracks) {
+      t.edition = ''
+      t.editionKey = ''
+    }
+
+  groupTracks(tracks)
+  const cover = pickCover(images)
+  return {
+    path: dir,
+    code,
+    title,
+    cover: cover?.path ?? null,
+    images: rankBackgrounds(images).map((i) => i.path),
+    tracks,
+    mojibake: files.some((f) => f.mojibake),
+    addedAt
+  }
+}
+
+// ---- grouping versions of one track ----
+
+const slot = (t: ScannedTrack): string => `${t.se}|${t.formatDir}|${t.ext}`
+const median = (g: ScannedTrack[]): number | null => {
+  const d = g.map((t) => t.duration).filter((x): x is number => x !== null)
+  return d.length ? d.sort((a, b) => a - b)[Math.floor(d.length / 2)] : null
+}
+
+// A group that has explicit SE versions: its unmarked versions are the other kind.
+function resolveSe(g: ScannedTrack[]): void {
+  const on = g.some((t) => t.se === 'on')
+  const off = g.some((t) => t.se === 'off')
+  if (on === off) return
+  for (const t of g) if (t.se === 'unknown') t.se = on ? 'off' : 'on'
+}
+
+export function groupTracks(tracks: ScannedTrack[]): void {
+  // 1. same normalized name
+  const byKey = new Map<string, ScannedTrack[]>()
+  for (const t of tracks) {
+    const k = `${t.editionKey}|${t.role}|${trackKey(t.title)}`
+    const g = byKey.get(k)
+    if (g) g.push(t)
+    else byKey.set(k, [t])
+  }
+
+  // 2. same track number, versions that don't collide, lengths that agree
+  // ("ABC_Tr1_v1_Voice_Only" ↔ "ABC_Tr1_v1_20240130")
+  const clusters: { key: string; tracks: ScannedTrack[] }[] = []
+  for (const [key, g] of byKey) {
+    const scope = key.slice(0, key.lastIndexOf('|'))
+    const num = trackNumber(g[0].title)
+    const d = median(g)
+    const into =
+      num === null
+        ? undefined
+        : clusters.find((c) => {
+            if (!c.key.startsWith(scope + '|') || trackNumber(c.tracks[0].title) !== num) return false
+            const slots = new Set(c.tracks.map(slot))
+            if (g.some((t) => slots.has(slot(t)))) return false
+            const cd = median(c.tracks)
+            return d === null || cd === null || Math.abs(d - cd) <= Math.max(MERGE_TOLERANCE_S, MERGE_TOLERANCE_RATIO * Math.max(d, cd))
+          })
+    if (into) into.tracks.push(...g)
+    else clusters.push({ key, tracks: [...g] })
+  }
+
+  for (const c of clusters) {
+    resolveSe(c.tracks)
+    for (const t of c.tracks) t.groupKey = c.key
+  }
+  const label = (c: { tracks: ScannedTrack[] }): string => c.tracks[0].title
+  clusters.sort((a, b) => naturalCompare(label(a), label(b)))
+  clusters.forEach((c, i) => c.tracks.forEach((t) => (t.sort = i)))
+}
+
+// ---- images ----
+
+const COVER_GOOD = /タイトルあり|タイトルロゴあり|제목\s*있음|타이틀\s*(?:있음|포함)|title|ジャケット|jacket|cover|表紙|サムネ|thumb|main|メイン|키\s*비주얼|キービジュアル/
+const ILLUST = /イラスト|일러스트|illust|자켓|재킷/
+const PLAIN = /なし|無し|없음|제거|without|文字ナシ|ロゴ無し|no\s*title/
+const COVER_BAD = /差分|sample|キャラクター|charactor|character|ストーリー|story|告知|cg|캐릭터|스토리/
+
+function coverScore(f: RawFile): number {
+  const n = nfkc(f.name).toLowerCase()
+  let s = -f.segs.length
+  if (COVER_GOOD.test(n)) s += 5
+  if (ILLUST.test(n)) s += 3
+  if (PLAIN.test(n)) s -= 2
+  if (COVER_BAD.test(n)) s -= 4
+  if (f.segs.some((x) => /sample|サンプル|샘플/i.test(x))) s -= 10
+  return s
+}
+
+function bgScore(f: RawFile): number {
+  const n = nfkc(f.name).toLowerCase()
+  return coverScore(f) + (PLAIN.test(n) ? 7 : 0)
+}
+
+function pickCover(images: RawFile[]): RawFile | null {
+  let best: RawFile | null = null
+  let bestScore = -Infinity
+  for (const f of images) {
+    const s = coverScore(f)
+    if (s > bestScore || (s === bestScore && best && naturalCompare(f.name, best.name) < 0)) {
+      best = f
+      bestScore = s
+    }
+  }
+  return best
+}
+
+function rankBackgrounds(images: RawFile[]): RawFile[] {
+  return images
+    .filter((f) => !f.segs.some((x) => /sample|サンプル|샘플/i.test(x)))
+    .map((f) => ({ f, s: bgScore(f) }))
+    .sort((a, b) => b.s - a.s || naturalCompare(a.f.name, b.f.name))
+    .map((x) => x.f)
+}
+
+// ---- folders of single-file works ----
+
+// A folder with no code of its own whose audio files each carry one
+// ("01M.タイトルRJ222673.mp3") holds many works: one per code (a work spread
+// over two files keeps both). Split when 2+ codes and most tracks (80%) have
+// one; tracks without a code stay as the folder's own work. Program only —
+// the files stay where they are (shared/split.ts).
+const SPLIT_MIN_SHARE = 0.8
+const TRACK_LEAD = /^[0-9０-９]+[a-zA-Z]?[._\-\s]+/
+
+export function splitByTrackCode(w: ScannedWork): ScannedWork[] | null {
+  if (w.code || !w.tracks.length) return null
+  const byCode = new Map<string, ScannedTrack[]>()
+  const rest: ScannedTrack[] = []
+  for (const t of w.tracks) {
+    const m = t.title.match(CODE)
+    if (!m) rest.push(t)
+    else {
+      const c = m[1].toUpperCase()
+      byCode.set(c, [...(byCode.get(c) ?? []), t])
+    }
+  }
+  if (byCode.size < 2 || (w.tracks.length - rest.length) / w.tracks.length < SPLIT_MIN_SHARE) return null
+  const out: ScannedWork[] = []
+  for (const [code, tracks] of byCode) {
+    const name = tracks[0].title.replace(CODE, '').replace(TRACK_LEAD, '').replace(/^[\s_\-]+|[\s_\-]+$/g, '')
+    out.push({ ...w, path: splitPath(w.path, code), code, title: name || code, cover: null, images: [], tracks, mojibake: tracks.some((t) => t.mojibake) })
+  }
+  if (rest.length) out.push({ ...w, tracks: rest, mojibake: rest.some((t) => t.mojibake) })
+  return out
+}
