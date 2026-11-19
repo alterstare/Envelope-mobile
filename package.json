@@ -1,6 +1,6 @@
 {
   "name": "envelope-mobile",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Envelope for Android (Capacitor): the doujin voice player on a phone, works from a NAS (SMB / WebDAV) or a phone folder, subtitles floating over other apps",
   "author": "alterstare",
   "license": "MIT",
