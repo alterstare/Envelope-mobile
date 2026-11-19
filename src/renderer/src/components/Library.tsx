@@ -22,6 +22,7 @@ import {
   ListIcon
 } from './icons'
 import { Caret, Check, Cover, FavButton, GroupButton, Pager, Stars, TagLine } from './ui'
+import FloatSearch from './FloatSearch'
 import { Sheet } from './SettingsView'
 
 const CHIP_GAP = 17 // px between chips (the divider sits in the middle)
@@ -282,6 +283,7 @@ export default function Library(): JSX.Element {
   // narrow grid: 2 columns while every card's meta line fits beside its play
   // button; once one doesn't, 1 column (until the page is wider than that)
   const homeRef = useRef<HTMLDivElement>(null)
+  const searchRowRef = useRef<HTMLFormElement>(null)
   // back to where the list was when the library is opened again: lined up
   // again while the layout settles (scroll events then aren't recorded);
   // the user scrolling ends it at once
@@ -461,6 +463,17 @@ export default function Library(): JSX.Element {
   const anyFilter = listenActive || langActive || ageActive || groupActive
   return (
     <div className={`home ${oneCol ? 'one-col' : ''} ${compactCards ? 'compact-cards' : ''}`} ref={homeRef} onScroll={(e) => !restoring.current && saveAnchor(e.currentTarget)}>
+      <FloatSearch
+        scroller={homeRef}
+        anchor={searchRowRef}
+        value={draft}
+        onChange={(v) => {
+          setDraft(v)
+          if (!v) setQuery('')
+        }}
+        onEnter={() => setQuery(draft.trim())}
+        placeholder="제목 · 서클 · 성우 · 태그 검색"
+      />
       <div className="home-head">
         <div className="home-top">
           <div className="badge">Voice</div>
@@ -471,6 +484,7 @@ export default function Library(): JSX.Element {
         <h1>라이브러리</h1>
         {/* the search box alone; 정렬 = the sort icon at its right end (Sorta 모바일) */}
         <form
+          ref={searchRowRef}
           className="search-row m-search"
           onSubmit={(e) => {
             e.preventDefault()
